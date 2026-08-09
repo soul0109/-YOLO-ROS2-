@@ -54,9 +54,12 @@ ros2 launch inspection_bringup bringup.launch.py
 
 ## 当前进度
 
+详见 [`docs/当前进度.md`](docs/当前进度.md)（活文档）。摘要：
+
 - [x] 项目执行计划
 - [x] 仓库目录骨架 + 协议包草稿
-- [ ] 阶段 1：Ubuntu 22.04 + ROS2 Humble + Gazebo 验收
+- [x] Ubuntu 22.04 虚拟机 + 仓库 clone
+- [ ] 阶段 1：ROS2 Humble + Gazebo 验收
 - [ ] 阶段 2+：见执行计划
 
 ## 开发约定
