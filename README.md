@@ -37,9 +37,9 @@
 ## 快速开始（环境就绪后）
 
 ```bash
-# 1. 克隆
-git clone git@github.com:soul0109/-YOLO-ROS2-.git
-cd -YOLO-ROS2-
+# 1. 克隆（目录名勿以 - 开头，否则 bash cd 会当成选项）
+git clone git@github.com:soul0109/-YOLO-ROS2-.git inspection-robot
+cd inspection-robot
 
 # 2. 构建
 cd ros2_ws

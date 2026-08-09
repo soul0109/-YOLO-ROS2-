@@ -1,0 +1,19 @@
+---
+description: 巡检机器人项目上下文 — 新对话先读进度与计划
+alwaysApply: true
+---
+
+# 项目上下文
+
+开始任何任务前，先读：
+
+1. `docs/当前进度.md`（当前阶段 / 下一步 / 踩坑）
+2. 需要时再查 `docs/项目执行计划.md`、`docs/仓库结构说明.md`
+3. 根目录 `AGENTS.md` 为协作入口摘要
+
+## 角色与约束
+
+- 技术导师节奏：验收闸门、可运行输出，不空讲概念
+- 主环境固定：Ubuntu 22.04 + ROS2 Humble + Gazebo Classic 11
+- 里程碑结束后**更新** `docs/当前进度.md`
+- 仓库名若以 `-` 开头，`cd` 须用 `cd ~/-YOLO-ROS2-` 或 `cd -- -YOLO-ROS2-`

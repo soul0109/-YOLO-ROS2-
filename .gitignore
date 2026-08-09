@@ -25,7 +25,9 @@ web/frontend/.vite/
 # IDE / OS / local agent
 .idea/
 .vscode/
-.cursor/
+.cursor/*
+!.cursor/rules/
+!.cursor/rules/**/*.mdc
 .workbuddy/
 *.swp
 .DS_Store
