@@ -1,0 +1,61 @@
+# ROS2 / colcon
+ros2_ws/build/
+ros2_ws/install/
+ros2_ws/log/
+ros2_ws/.colcon_install_layout
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.venv/
+venv/
+.env
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Node / frontend
+node_modules/
+web/frontend/dist/
+web/frontend/.vite/
+*.local
+
+# IDE / OS / local agent
+.idea/
+.vscode/
+.cursor/
+.workbuddy/
+*.swp
+.DS_Store
+Thumbs.db
+
+# Models & datasets (large binaries — document download in README)
+models/**/*.pt
+models/**/*.onnx
+models/**/*.engine
+models/**/*.trt
+models/datasets/
+!models/**/.gitkeep
+!models/README.md
+
+# Runtime artifacts
+*.bag
+*.db3
+*.mcap
+*.sqlite3
+*.db
+rosbag2_*/
+assets/raw/
+.codegraph/
+
+# Gazebo / logs
+~/.gazebo/
+*.log
+*.pid
+
+# Secrets
+*.pem
+credentials.json
+secrets.yaml

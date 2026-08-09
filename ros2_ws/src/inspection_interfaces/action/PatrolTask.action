@@ -1,0 +1,18 @@
+# Goal: ordered waypoint patrol
+geometry_msgs/PoseStamped[] waypoints
+bool snapshot_on_arrive
+string task_label
+---
+# Result
+bool success
+int32 visited_count
+int32 anomaly_count
+string report_path
+string message
+---
+# Feedback
+int32 current_index
+int32 total_waypoints
+string phase          # navigating | snapshot | anomaly_hold | idle
+float32 progress      # 0.0 ~ 1.0
+string current_label

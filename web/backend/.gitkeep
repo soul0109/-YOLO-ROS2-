@@ -1,0 +1,2 @@
+# FastAPI backend (stage 7).
+# Suggested layout later: app/main.py, api/, services/, db/
