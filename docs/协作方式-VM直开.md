@@ -16,9 +16,27 @@ bash scripts/git_sync_push.sh "feat: 描述本次改动"
 
 ### 宿主机拉取（替代共享文件夹 sync）
 
+**方式 A：GitHub（推荐，VM 能 push 时）**
+
 ```bash
-cd <你的仓库目录>    # 例如 D:\...\基于YOLO+ROS2的智能巡检机器人仿真系统
+# VM 先推送
+bash ~/inspection-robot/scripts/git_sync_push.sh "feat: 描述改动"
+
+# 宿主机拉取
+cd <你的仓库目录>
 git pull origin main
+```
+
+**方式 B：VM push 失败时，用 bundle 文件（不删任何东西）**
+
+```bash
+# VM 生成增量包（在 VM 执行）
+cd ~/inspection-robot
+git bundle create ~/inspection-robot-vm.bundle origin/main..HEAD
+
+# 把 ~/inspection-robot-vm.bundle 拷到宿主机（U 盘 / 共享只读复制均可）
+# 宿主机仓库里执行：
+git pull /path/to/inspection-robot-vm.bundle main
 ```
 
 **不要用 `sync_from_share.sh` 覆盖 VM；也不要用 rsync --delete 双向同步。**
