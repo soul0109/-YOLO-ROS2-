@@ -23,10 +23,13 @@
   <xacro:property name="wheel_width" value="0.03"/>
   <xacro:property name="wheel_mass" value="0.5"/>
   <xacro:property name="wheel_separation" value="0.28"/>
+  <!-- 驱动轮在车尾（-X）：与车头万向轮形成「后驱三轮」稳定布局 -->
+  <xacro:property name="wheel_offset_x" value="-0.12"/>
 
-  <xacro:property name="caster_radius" value="0.025"/>
-  <xacro:property name="caster_mass" value="0.1"/>
-  <xacro:property name="caster_offset_x" value="-0.12"/>
+  <xacro:property name="caster_radius" value="0.03"/>
+  <xacro:property name="caster_mass" value="0.2"/>
+  <!-- 万向轮在车头（+X） -->
+  <xacro:property name="caster_offset_x" value="0.14"/>
 
   <!-- base_link 中心离地高度 = 轮半径 + 底盘半高 -->
   <xacro:property name="base_z" value="${wheel_radius + base_height / 2.0}"/>
@@ -149,8 +152,9 @@
   <joint name="left_wheel_joint" type="continuous">
     <parent link="base_link"/>
     <child link="left_wheel_link"/>
-    <origin xyz="0 ${wheel_separation / 2.0} ${wheel_center_z}" rpy="0 0 0"/>
+    <origin xyz="${wheel_offset_x} ${wheel_separation / 2.0} ${wheel_center_z}" rpy="0 0 0"/>
     <axis xyz="0 1 0"/>
+    <dynamics damping="1.0" friction="1.0"/>
   </joint>
 
   <!-- ========== 右驱动轮 ========== -->
@@ -177,11 +181,12 @@
   <joint name="right_wheel_joint" type="continuous">
     <parent link="base_link"/>
     <child link="right_wheel_link"/>
-    <origin xyz="0 ${-wheel_separation / 2.0} ${wheel_center_z}" rpy="0 0 0"/>
+    <origin xyz="${wheel_offset_x} ${-wheel_separation / 2.0} ${wheel_center_z}" rpy="0 0 0"/>
     <axis xyz="0 1 0"/>
+    <dynamics damping="1.0" friction="1.0"/>
   </joint>
 
-  <!-- ========== 后万向轮（阶段 3.1 固定关节，仅支撑不驱动） ========== -->
+  <!-- 万向轮在车头（+X）；与中部驱动轮形成三点支撑（Gazebo 3.2 落地关键） -->
   <link name="caster_link">
     <visual>
       <origin xyz="0 0 0" rpy="0 0 0"/>

@@ -1,0 +1,7 @@
+# 避免 Windows 宿主机编辑后脚本在 Linux VM 报 $'\r': command not found
+*.sh text eol=lf
+*.py text eol=lf
+*.launch.py text eol=lf
+*.xacro text eol=lf
+*.urdf text eol=lf
+*.md text eol=lf

@@ -1,22 +1,19 @@
 #!/usr/bin/env python3
 """
-阶段 3.2+3.3：Gazebo 空世界 spawn robot_v0 + 差速驱动。
+阶段 3.3 一键启动：Gazebo + robot_v0 + 方向键遥控。
 
-启动内容：
-  1. Gazebo（empty.world）
-  2. robot_state_publisher（URDF + TF，use_sim_time）
-  3. spawn_entity（略高于地面落下）
-  4. Gazebo 插件（写在 robot_v0.gazebo.xacro）：
-     - joint_state_publisher → /joint_states
-     - diff_drive → /cmd_vel_gazebo（经超时中继）、/odom、odom→base_footprint TF
-  5. cmd_vel_timeout 节点：/cmd_vel → /cmd_vel_gazebo，超时自动刹车
+用法：
+  ros2 launch simulation_worlds gazebo_robot_v0_teleop.launch.py
+
+或项目根目录：
+  bash scripts/run_gazebo_teleop.sh --build
 """
 
 import os
 
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
+from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, TimerAction
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import Command, LaunchConfiguration
 from launch_ros.actions import Node
@@ -55,9 +52,6 @@ def generate_launch_description() -> LaunchDescription:
         ],
     )
 
-    # 关节状态由 Gazebo 插件发布（见 robot_v0.gazebo.xacro），不再用独立 jsp 节点
-
-    # spawn 略高于地面，让物理引擎自然落下稳定
     spawn_robot = Node(
         package='gazebo_ros',
         executable='spawn_entity.py',
@@ -82,6 +76,27 @@ def generate_launch_description() -> LaunchDescription:
         ],
     )
 
+    keyboard_teleop = TimerAction(
+        period=4.0,
+        actions=[
+            Node(
+                package='simulation_worlds',
+                executable='keyboard_teleop.py',
+                name='keyboard_teleop',
+                output='screen',
+                emulate_tty=True,
+                parameters=[
+                    {'use_sim_time': use_sim_time},
+                    {'cmd_vel_topic': 'cmd_vel'},
+                    {'linear_speed': 0.15},
+                    {'angular_speed': 0.5},
+                    {'publish_rate_hz': 10.0},
+                    {'key_release_timeout_sec': 0.2},
+                ],
+            ),
+        ],
+    )
+
     return LaunchDescription([
         DeclareLaunchArgument(
             'use_sim_time',
@@ -92,4 +107,5 @@ def generate_launch_description() -> LaunchDescription:
         robot_state_publisher,
         cmd_vel_timeout,
         spawn_robot,
+        keyboard_teleop,
     ])

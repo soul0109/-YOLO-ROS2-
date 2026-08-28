@@ -8,4 +8,10 @@ install(DIRECTORY worlds models launch
   OPTIONAL
 )
 
+install(PROGRAMS
+  scripts/cmd_vel_timeout.py
+  scripts/keyboard_teleop.py
+  DESTINATION lib/${PROJECT_NAME}
+)
+
 ament_package()

@@ -1,11 +1,14 @@
 #!/usr/bin/env bash
-# [已废弃] 宿主机共享 → VM。现已在 VM 直开开发，请用 git pull，勿再运行本脚本。
-# 若必须运行：默认不 delete；完全镜像才 SYNC_DELETE=1
+# Push VM workspace edits to the VMware shared folder (host Cursor can see them).
+# Run inside the Ubuntu VM after a dev session or before host commit/push:
+#   bash ~/inspection-robot/scripts/sync_to_share.sh
+#
+# Pair with sync_from_share.sh (host -> VM) when you edit on the host instead.
 
-set -eo pipefail
+set -euo pipefail
 
 PROJECT_NAME="基于YOLO+ROS2的智能巡检机器人仿真系统"
-DEST="${DEST_DIR:-$HOME/inspection-robot}"
+SRC="${SRC_DIR:-$HOME/inspection-robot}"
 
 if [[ -n "${SHARE_DIR:-}" ]]; then
   SHARE="$SHARE_DIR"
@@ -29,19 +32,9 @@ if [[ ! -d "$SHARE" ]]; then
   exit 1
 fi
 
-mkdir -p "$DEST"
+mkdir -p "$SHARE"
 
-RSYNC_OPTS=(-a)
-if [[ "${SYNC_DELETE:-0}" == "1" ]]; then
-  echo "警告: SYNC_DELETE=1，将删除 VM 上共享目录里没有的文件。"
-  RSYNC_OPTS+=(--delete)
-else
-  echo "安全模式: 只覆盖/新增，不删除 VM 独有文件。"
-  echo "若确需完全镜像共享目录，请: SYNC_DELETE=1 bash $0"
-fi
-echo ""
-
-rsync "${RSYNC_OPTS[@]}" \
+rsync -a --delete \
   --exclude '.git/' \
   --exclude 'ros2_ws/build/' \
   --exclude 'ros2_ws/install/' \
@@ -50,7 +43,7 @@ rsync "${RSYNC_OPTS[@]}" \
   --exclude '.pytest_cache/' \
   --exclude '*.pyc' \
   --exclude '.workbuddy/' \
-  "$SHARE"/ "$DEST"/
+  "$SRC"/ "$SHARE"/
 
-echo "同步完成: $SHARE -> $DEST"
-echo "提示: VM 侧 .git 保留不动；正式提交仍在宿主机或 VM 各自仓库处理。"
+echo "同步完成: $SRC -> $SHARE"
+echo "提示: 宿主机打开共享文件夹即可看到最新代码；正式 push 仍在宿主机执行 sync_push.ps1。"
