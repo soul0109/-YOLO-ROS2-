@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
 """
-robot_v0 方向键遥控 → /cmd_vel
+robot_v0 键盘遥控 → /cmd_vel
 
-↑↓ 前进/后退，←→ 原地转弯，空格/s 急停，q 退出并刹车。
-松键后 key_release_timeout 内自动发零速度（配合 cmd_vel_timeout 双保险）。
+按住 W/A/S/D 或方向键持续运动，可组合（如 W+A 前进左转）；松手后超时停止；空格急停。
 """
 
 from __future__ import annotations
@@ -11,76 +10,139 @@ from __future__ import annotations
 import select
 import sys
 import termios
+import time
 import tty
 from typing import Optional
 
 import rclpy
 from geometry_msgs.msg import Twist
 from rclpy.node import Node
-from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
-
-CMD_VEL_QOS = QoSProfile(
-    reliability=ReliabilityPolicy.RELIABLE,
-    durability=DurabilityPolicy.VOLATILE,
-    history=HistoryPolicy.KEEP_LAST,
-    depth=10,
-)
+from rclpy.qos import qos_profile_system_default
 
 HELP = """
 ========================================
-  robot_v0 键盘遥控（方向键）
+  robot_v0 键盘遥控（按住运动，松手停）
 ========================================
-        ↑ 前进
-   ← 左转   → 右转
-        ↓ 后退
-  空格 / s  立刻停止
-  q         退出并刹车
+  W / S     前进 / 后退
+  A / D     左转 / 右转
+  组合键    如 W+A 前进左转、W+D 前进右转
+  方向键    同上（VMware 建议仍用 WASD 更稳）
+  空格      急停
+  Q         退出
 ========================================
-松键约 0.2s 自动停；中继节点 0.5s 兜底刹车
-请在本终端按键（不要切到别的窗口）
+按住只打一次日志；松手约 0.8s 后自动停。
 ========================================
 """
 
+_ARROW_TAIL: dict[str, str] = {
+    'A': 'UP',
+    'B': 'DOWN',
+    'C': 'RIGHT',
+    'D': 'LEFT',
+}
 
-def read_key(timeout_sec: float = 0.05) -> Optional[str]:
-    """读取单键；方向键返回 UP/DOWN/LEFT/RIGHT。"""
-    if not select.select([sys.stdin], [], [], timeout_sec)[0]:
+_LETTER_KEYS: dict[str, str] = {
+    'w': 'UP', 's': 'DOWN', 'a': 'LEFT', 'd': 'RIGHT',
+    'i': 'UP', 'k': 'DOWN', 'j': 'LEFT', 'l': 'RIGHT',
+}
+
+_ACTION_TO_AXIS: dict[str, str] = {
+    'UP': 'fwd',
+    'DOWN': 'back',
+    'LEFT': 'left',
+    'RIGHT': 'right',
+}
+
+_AXIS_LABELS: dict[str, str] = {
+    'fwd': '前进',
+    'back': '后退',
+    'left': '左转',
+    'right': '右转',
+}
+
+_LINEAR_AXES = frozenset({'fwd', 'back'})
+_ANGULAR_AXES = frozenset({'left', 'right'})
+
+
+class KeyReader:
+    """带缓冲的按键读取，避免方向键 ESC 序列被拆成单个字母（如 D→d=右转）。"""
+
+    def __init__(self) -> None:
+        self._buf = ''
+
+    def poll(self, timeout_sec: float = 0.05) -> Optional[str]:
+        if not self._buf:
+            if not select.select([sys.stdin], [], [], timeout_sec)[0]:
+                return None
+            self._buf += sys.stdin.read(1)
+
+        while select.select([sys.stdin], [], [], 0)[0]:
+            self._buf += sys.stdin.read(1)
+
+        return self._consume_one()
+
+    def _consume_one(self) -> Optional[str]:
+        while self._buf:
+            ch = self._buf[0]
+
+            if ch in ('\x03', '\x04'):
+                self._buf = self._buf[1:]
+                return 'QUIT'
+            if ch in ('\r', '\n'):
+                self._buf = self._buf[1:]
+                continue
+
+            if ch == '\x1b':
+                action = self._parse_escape()
+                if action is not None:
+                    return action
+                return None
+
+            if ch == '[' or ch.isdigit() or ch in ';':
+                self._buf = self._buf[1:]
+                continue
+
+            self._buf = self._buf[1:]
+            return ch.lower()
+
         return None
 
-    ch = sys.stdin.read(1)
-    if ch != '\x1b':
-        if ch in ('\x03', '\x04'):
-            return 'QUIT'
-        if ch in ('\r', '\n'):
+    def _parse_escape(self) -> Optional[str]:
+        """解析 \\x1b[? 或 \\x1bO? 方向键；没收齐则返回 None（保留 buf）。"""
+        buf = self._buf
+        if len(buf) < 2:
             return None
-        return ch.lower()
 
-    if not select.select([sys.stdin], [], [], 0.01)[0]:
+        if buf[1] == 'O':
+            if len(buf) < 3:
+                return None
+            tail = buf[2]
+            self._buf = buf[3:]
+            return _ARROW_TAIL.get(tail)
+
+        if buf[1] == '[':
+            for i in range(2, len(buf)):
+                if buf[i] in _ARROW_TAIL:
+                    action = _ARROW_TAIL[buf[i]]
+                    self._buf = buf[i + 1:]
+                    return action
+            if len(buf) > 12:
+                self._buf = ''
+            return None
+
+        self._buf = buf[1:]
         return None
-    ch2 = sys.stdin.read(1)
-    if ch2 != '[' or not select.select([sys.stdin], [], [], 0.01)[0]:
-        return None
-    ch3 = sys.stdin.read(1)
-    return {
-        'A': 'UP',
-        'B': 'DOWN',
-        'C': 'RIGHT',
-        'D': 'LEFT',
-    }.get(ch3)
 
 
 class KeyboardTeleop(Node):
-    """方向键发布 /cmd_vel。"""
-
     def __init__(self) -> None:
         super().__init__('keyboard_teleop')
 
-        # use_sim_time 由 launch 注入，勿在此 declare
         self.declare_parameter('cmd_vel_topic', 'cmd_vel')
         self.declare_parameter('linear_speed', 0.15)
         self.declare_parameter('angular_speed', 0.5)
         self.declare_parameter('publish_rate_hz', 10.0)
-        self.declare_parameter('key_release_timeout_sec', 0.2)
+        self.declare_parameter('key_release_timeout_sec', 0.8)
 
         topic = self.get_parameter('cmd_vel_topic').value
         self._linear = float(self.get_parameter('linear_speed').value)
@@ -90,9 +152,15 @@ class KeyboardTeleop(Node):
 
         self._twist = Twist()
         self._moving = False
-        self._last_key_time = self.get_clock().now()
+        self._last_label: Optional[str] = None
+        # 线速度 / 角速度分通道：终端同时只重复一个键，不能按「每键超时」判松手
+        self._linear_dir: Optional[str] = None
+        self._linear_ts = 0.0
+        self._angular_dir: Optional[str] = None
+        self._angular_ts = 0.0
+        self._keys = KeyReader()
 
-        self._pub = self.create_publisher(Twist, topic, CMD_VEL_QOS)
+        self._pub = self.create_publisher(Twist, topic, qos_profile_system_default)
         self.create_timer(1.0 / rate_hz, self._on_timer)
 
         if not sys.stdin.isatty():
@@ -101,56 +169,133 @@ class KeyboardTeleop(Node):
                 '请用: bash ~/inspection-robot/scripts/run_gazebo_teleop.sh --build'
             )
 
+        print(HELP, flush=True)
         self._term_settings = termios.tcgetattr(sys.stdin)
         tty.setraw(sys.stdin.fileno())
-        print(HELP, flush=True)
 
     def destroy_node(self) -> bool:
-        self._publish_stop()
+        self._publish_stop(manual=False)
         termios.tcsetattr(sys.stdin, termios.TCSADRAIN, self._term_settings)
         return super().destroy_node()
 
-    def _publish_stop(self) -> None:
+    def _active_axes(self) -> set[str]:
+        axes: set[str] = set()
+        if self._linear_dir:
+            axes.add(self._linear_dir)
+        if self._angular_dir:
+            axes.add(self._angular_dir)
+        return axes
+
+    @staticmethod
+    def _format_label(alive: set[str]) -> str:
+        parts: list[str] = []
+        if 'fwd' in alive:
+            parts.append(_AXIS_LABELS['fwd'])
+        if 'back' in alive:
+            parts.append(_AXIS_LABELS['back'])
+        if 'left' in alive:
+            parts.append(_AXIS_LABELS['left'])
+        if 'right' in alive:
+            parts.append(_AXIS_LABELS['right'])
+        return '+'.join(parts)
+
+    def _compute_twist(self, alive: set[str]) -> tuple[float, float]:
+        lx = 0.0
+        az = 0.0
+        if 'fwd' in alive:
+            lx += self._linear
+        if 'back' in alive:
+            lx -= self._linear
+        if 'left' in alive:
+            az += self._angular
+        if 'right' in alive:
+            az -= self._angular
+        return lx, az
+
+    def _sync_twist(self, log_stop: bool = True) -> None:
+        alive = self._active_axes()
+        lx, az = self._compute_twist(alive)
+
+        if lx == 0.0 and az == 0.0:
+            if self._moving and log_stop:
+                self.get_logger().info('停止（松手）')
+            self._twist = Twist()
+            self._moving = False
+            self._last_label = None
+            self._pub.publish(Twist())
+            return
+
+        label = self._format_label(alive)
+        if label != self._last_label:
+            self.get_logger().info(label)
+            self._last_label = label
+
+        self._twist.linear.x = lx
+        self._twist.angular.z = az
+        self._moving = True
+        self._pub.publish(self._twist)
+
+    def _publish_stop(self, manual: bool = False) -> None:
+        if self._moving and manual:
+            self.get_logger().info('急停')
+        self._linear_dir = None
+        self._angular_dir = None
         self._twist = Twist()
         self._moving = False
+        self._last_label = None
         self._pub.publish(Twist())
 
-    def _set_motion(self, linear_x: float, angular_z: float) -> None:
-        self._twist.linear.x = linear_x
-        self._twist.angular.z = angular_z
-        self._moving = True
-        self._last_key_time = self.get_clock().now()
-        self._pub.publish(self._twist)
+    def _touch_axis(self, axis: str) -> None:
+        now = time.monotonic()
+        if axis in _LINEAR_AXES:
+            self._linear_dir = axis
+            self._linear_ts = now
+        elif axis in _ANGULAR_AXES:
+            self._angular_dir = axis
+            self._angular_ts = now
+            if self._linear_dir:
+                self._linear_ts = now
+        self._sync_twist(log_stop=False)
+
+    def _expire_keys(self) -> None:
+        now = time.monotonic()
+        angular_cleared = False
+
+        if self._angular_dir and now - self._angular_ts > self._release_timeout:
+            self._angular_dir = None
+            angular_cleared = True
+
+        if self._linear_dir:
+            if self._angular_dir is None:
+                if angular_cleared:
+                    # 转弯结束：给 W/S 自动重复一点时间恢复
+                    self._linear_ts = now
+                elif now - self._linear_ts > self._release_timeout:
+                    self._linear_dir = None
+            # 转弯中冻结线速度超时（D 会抢走 W 的 key repeat）
+
+        self._sync_twist()
 
     def _on_timer(self) -> None:
-        if not self._moving:
-            return
-        elapsed = (self.get_clock().now() - self._last_key_time).nanoseconds * 1e-9
-        if elapsed > self._release_timeout:
-            self._publish_stop()
-            return
-        self._pub.publish(self._twist)
+        self._expire_keys()
+        if self._moving:
+            self._pub.publish(self._twist)
 
     def spin_keyboard(self) -> None:
         while rclpy.ok():
             rclpy.spin_once(self, timeout_sec=0.0)
-            key = read_key(0.05)
-            if key is None:
+            raw = self._keys.poll(0.05)
+            if raw is None:
                 continue
-            if key in ('q', 'QUIT'):
+            if raw in ('q', 'QUIT'):
                 break
-            if key in (' ', 's'):
-                self._publish_stop()
-                self.get_logger().info('急停')
+            if raw == ' ':
+                self._publish_stop(manual=True)
                 continue
-            if key == 'UP':
-                self._set_motion(self._linear, 0.0)
-            elif key == 'DOWN':
-                self._set_motion(-self._linear, 0.0)
-            elif key == 'LEFT':
-                self._set_motion(0.0, self._angular)
-            elif key == 'RIGHT':
-                self._set_motion(0.0, -self._angular)
+
+            action = raw if raw in _ACTION_TO_AXIS else _LETTER_KEYS.get(raw)
+            if action:
+                self._touch_axis(_ACTION_TO_AXIS[action])
 
 
 def main() -> None:
@@ -161,7 +306,7 @@ def main() -> None:
     except KeyboardInterrupt:
         pass
     finally:
-        node._publish_stop()
+        node._publish_stop(manual=False)
         node.destroy_node()
         rclpy.shutdown()
 
