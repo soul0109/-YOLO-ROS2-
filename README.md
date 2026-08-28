@@ -2,7 +2,7 @@
 
 端到端可运行的智能巡检机器人仿真系统：Gazebo 厂区场景 + SLAM/Nav2 自主巡检 + YOLO 异常检测 + Web 监控平台。
 
-> 详细执行计划见 [`docs/项目执行计划.md`](docs/项目执行计划.md)
+> 当前进度：[`docs/当前进度.md`](docs/当前进度.md) · 执行手册：[`docs/后续开发计划与建模攻关方案.md`](docs/后续开发计划与建模攻关方案.md) · 总蓝图：[`docs/项目执行计划.md`](docs/项目执行计划.md)
 
 ## 技术栈
 
@@ -56,11 +56,10 @@ ros2 launch inspection_bringup bringup.launch.py
 
 详见 [`docs/当前进度.md`](docs/当前进度.md)（活文档）。摘要：
 
-- [x] 项目执行计划
-- [x] 仓库目录骨架 + 协议包草稿
-- [x] Ubuntu 22.04 虚拟机 + 仓库 clone
-- [ ] 阶段 1：ROS2 Humble + Gazebo 验收
-- [ ] 阶段 2+：见执行计划
+- [x] 阶段 1：ROS2 Humble + Gazebo + `inspection_interfaces` 验收
+- [x] 后续开发计划与建模攻关方案
+- [ ] **阶段 2（进行中）**：`inspection_demos` + pub/sub / service / action / launch / TF
+- [ ] 阶段 3+：见 [`docs/后续开发计划与建模攻关方案.md`](docs/后续开发计划与建模攻关方案.md)
 
 ## 开发约定
 

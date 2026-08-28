@@ -5,11 +5,28 @@
 
 set -euo pipefail
 
-SHARE="${SHARE_DIR:-/mnt/a_xm/基于YOLO+ROS2的智能巡检机器人仿真系统}"
+PROJECT_NAME="基于YOLO+ROS2的智能巡检机器人仿真系统"
 DEST="${DEST_DIR:-$HOME/inspection-robot}"
+
+if [[ -n "${SHARE_DIR:-}" ]]; then
+  SHARE="$SHARE_DIR"
+else
+  for candidate in \
+    "/mnt/a_xm/${PROJECT_NAME}" \
+    "/mnt/hgfs/a_xm/${PROJECT_NAME}"; do
+    if [[ -d "$candidate" ]]; then
+      SHARE="$candidate"
+      break
+    fi
+  done
+  SHARE="${SHARE:-/mnt/a_xm/${PROJECT_NAME}}"
+fi
 
 if [[ ! -d "$SHARE" ]]; then
   echo "共享目录不存在: $SHARE"
+  echo "提示: 先挂载 VMware 共享，例如："
+  echo "  sudo mkdir -p /mnt/hgfs"
+  echo "  sudo vmhgfs-fuse .host:/ /mnt/hgfs -o allow_other"
   exit 1
 fi
 

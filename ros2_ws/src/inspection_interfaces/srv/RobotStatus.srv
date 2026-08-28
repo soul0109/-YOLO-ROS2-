@@ -1,0 +1,8 @@
+# 查询机器人运行状态（阶段 2 demo：服务节点返回模拟数据）
+# 请求为空：调用方无需传参，直接询问“当前状态如何？”
+---
+# 响应：机器人状态快照
+string robot_id
+string status          # idle | patrolling | error
+float32 battery_percent
+geometry_msgs/Pose pose

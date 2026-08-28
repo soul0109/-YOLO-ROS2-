@@ -16,6 +16,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/Detection.msg"
   "msg/DetectionArray.msg"
   "msg/AnomalyEvent.msg"
+  "srv/RobotStatus.srv"
   "action/PatrolTask.action"
   DEPENDENCIES builtin_interfaces std_msgs geometry_msgs sensor_msgs
 )

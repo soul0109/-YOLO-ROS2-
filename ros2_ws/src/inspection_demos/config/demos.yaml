@@ -1,0 +1,32 @@
+# 阶段 2 demo 节点参数
+# launch 按节点名加载对应段落（见 demos.launch.py）
+
+log_publisher:
+  ros__parameters:
+    log_interval_sec: 2.0
+    robot_id: "robot_01"
+
+log_subscriber:
+  ros__parameters: {}
+
+robot_status_server:
+  ros__parameters:
+    robot_id: "robot_01"
+    default_status: "idle"
+    battery_percent: 85.0
+    pose_x: 1.5
+    pose_y: 2.0
+    pose_z: 0.0
+
+patrol_action_server:
+  ros__parameters:
+    step_duration_sec: 2.0
+
+static_tf_broadcaster:
+  ros__parameters:
+    parent_frame: "base_link"
+    child_frame: "camera_link"
+    camera_x: 0.10
+    camera_y: 0.0
+    camera_z: 0.30
+    camera_yaw_rad: 0.0
