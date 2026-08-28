@@ -208,4 +208,7 @@
     <origin xyz="${caster_offset_x} 0 ${-(base_z - caster_radius)}" rpy="0 0 0"/>
   </joint>
 
+  <!-- Gazebo 物理参数（阶段 3.2+） -->
+  <xacro:include filename="robot_v0.gazebo.xacro"/>
+
 </robot>
