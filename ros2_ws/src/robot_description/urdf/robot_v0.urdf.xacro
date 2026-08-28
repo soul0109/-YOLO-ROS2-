@@ -1,0 +1,187 @@
+<?xml version="1.0"?>
+<!--
+  robot_v0：阶段 3.1 最小差速底盘（仅 RViz 显示，不含 Gazebo 插件）
+
+  坐标系树：
+    base_footprint（地面投影点，导航用）
+      └── base_link（车身中心）
+            ├── left_wheel_link
+            ├── right_wheel_link
+            └── caster_link（万向支撑轮）
+
+  单位：米（SI）
+-->
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro" name="robot_v0">
+
+  <!-- ========== 可调参数（阶段 3.1 先用手工值，后续可接 ros2 param） ========== -->
+  <xacro:property name="base_length" value="0.40"/>
+  <xacro:property name="base_width" value="0.30"/>
+  <xacro:property name="base_height" value="0.10"/>
+  <xacro:property name="base_mass" value="5.0"/>
+
+  <xacro:property name="wheel_radius" value="0.05"/>
+  <xacro:property name="wheel_width" value="0.03"/>
+  <xacro:property name="wheel_mass" value="0.5"/>
+  <xacro:property name="wheel_separation" value="0.28"/>
+
+  <xacro:property name="caster_radius" value="0.025"/>
+  <xacro:property name="caster_mass" value="0.1"/>
+  <xacro:property name="caster_offset_x" value="-0.12"/>
+
+  <!-- base_link 中心离地高度 = 轮半径 + 底盘半高 -->
+  <xacro:property name="base_z" value="${wheel_radius + base_height / 2.0}"/>
+
+  <!-- 驱动轮中心相对 base_link 的 z：轮心应与地面齐平 -->
+  <xacro:property name="wheel_center_z" value="${-(base_height / 2.0)}"/>
+
+  <xacro:macro name="box_inertial" params="mass x y z">
+    <inertial>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <mass value="${mass}"/>
+      <inertia ixx="${mass * (y*y + z*z) / 12.0}"
+               iyy="${mass * (x*x + z*z) / 12.0}"
+               izz="${mass * (x*x + y*y) / 12.0}"
+               ixy="0" ixz="0" iyz="0"/>
+    </inertial>
+  </xacro:macro>
+
+  <xacro:macro name="cylinder_inertial" params="mass radius length">
+    <inertial>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <mass value="${mass}"/>
+      <!-- 圆柱绕轴（y）转动惯量近似 -->
+      <inertia ixx="${mass * (3.0 * radius * radius + length * length) / 12.0}"
+               iyy="${mass * radius * radius / 2.0}"
+               izz="${mass * (3.0 * radius * radius + length * length) / 12.0}"
+               ixy="0" ixz="0" iyz="0"/>
+    </inertial>
+  </xacro:macro>
+
+  <xacro:macro name="sphere_inertial" params="mass radius">
+    <inertial>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <mass value="${mass}"/>
+      <inertia ixx="${0.4 * mass * radius * radius}"
+               iyy="${0.4 * mass * radius * radius}"
+               izz="${0.4 * mass * radius * radius}"
+               ixy="0" ixz="0" iyz="0"/>
+    </inertial>
+  </xacro:macro>
+
+  <!-- ========== base_footprint：地面上的参考点（2D 导航平面） ========== -->
+  <link name="base_footprint"/>
+
+  <joint name="base_joint" type="fixed">
+    <parent link="base_footprint"/>
+    <child link="base_link"/>
+    <origin xyz="0 0 ${base_z}" rpy="0 0 0"/>
+  </joint>
+
+  <!-- ========== base_link：车身主体 ========== -->
+  <!--
+    visual   = RViz/Gazebo 里「长什么样」
+    collision = 物理引擎「撞到什么形状」（阶段 3.2 Gazebo 才生效）
+    inertial  = 质量/惯性（防仿真时翻倒、乱飞；阶段 3.1 RViz 不强制需要）
+  -->
+  <link name="base_link">
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <box size="${base_length} ${base_width} ${base_height}"/>
+      </geometry>
+      <material name="blue">
+        <color rgba="0.2 0.4 0.8 1.0"/>
+      </material>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <box size="${base_length} ${base_width} ${base_height}"/>
+      </geometry>
+    </collision>
+    <xacro:box_inertial mass="${base_mass}" x="${base_length}" y="${base_width}" z="${base_height}"/>
+  </link>
+
+  <!-- ========== 左驱动轮 ========== -->
+  <link name="left_wheel_link">
+    <visual>
+      <origin xyz="0 0 0" rpy="1.5708 0 0"/>
+      <geometry>
+        <cylinder radius="${wheel_radius}" length="${wheel_width}"/>
+      </geometry>
+      <material name="black">
+        <color rgba="0.1 0.1 0.1 1.0"/>
+      </material>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0" rpy="1.5708 0 0"/>
+      <geometry>
+        <cylinder radius="${wheel_radius}" length="${wheel_width}"/>
+      </geometry>
+    </collision>
+    <xacro:cylinder_inertial mass="${wheel_mass}" radius="${wheel_radius}" length="${wheel_width}"/>
+  </link>
+
+  <!-- continuous = 可无限旋转的关节；axis 0 1 0 = 绕 Y 轴转（差速轮标准写法） -->
+  <joint name="left_wheel_joint" type="continuous">
+    <parent link="base_link"/>
+    <child link="left_wheel_link"/>
+    <origin xyz="0 ${wheel_separation / 2.0} ${wheel_center_z}" rpy="0 0 0"/>
+    <axis xyz="0 1 0"/>
+  </joint>
+
+  <!-- ========== 右驱动轮 ========== -->
+  <link name="right_wheel_link">
+    <visual>
+      <origin xyz="0 0 0" rpy="1.5708 0 0"/>
+      <geometry>
+        <cylinder radius="${wheel_radius}" length="${wheel_width}"/>
+      </geometry>
+      <material name="black">
+        <color rgba="0.1 0.1 0.1 1.0"/>
+      </material>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0" rpy="1.5708 0 0"/>
+      <geometry>
+        <cylinder radius="${wheel_radius}" length="${wheel_width}"/>
+      </geometry>
+    </collision>
+    <xacro:cylinder_inertial mass="${wheel_mass}" radius="${wheel_radius}" length="${wheel_width}"/>
+  </link>
+
+  <joint name="right_wheel_joint" type="continuous">
+    <parent link="base_link"/>
+    <child link="right_wheel_link"/>
+    <origin xyz="0 ${-wheel_separation / 2.0} ${wheel_center_z}" rpy="0 0 0"/>
+    <axis xyz="0 1 0"/>
+  </joint>
+
+  <!-- ========== 后万向轮（阶段 3.1 固定关节，仅支撑不驱动） ========== -->
+  <link name="caster_link">
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <sphere radius="${caster_radius}"/>
+      </geometry>
+      <material name="gray">
+        <color rgba="0.5 0.5 0.5 1.0"/>
+      </material>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <sphere radius="${caster_radius}"/>
+      </geometry>
+    </collision>
+    <xacro:sphere_inertial mass="${caster_mass}" radius="${caster_radius}"/>
+  </link>
+
+  <joint name="caster_joint" type="fixed">
+    <parent link="base_link"/>
+    <child link="caster_link"/>
+    <!-- 万向轮底部接触地面：球心 z = -(base_z - caster_radius) 相对 base_link -->
+    <origin xyz="${caster_offset_x} 0 ${-(base_z - caster_radius)}" rpy="0 0 0"/>
+  </joint>
+
+</robot>
