@@ -1,11 +1,14 @@
 #!/usr/bin/env bash
-# Push VM workspace edits to the VMware shared folder (host Cursor can see them).
-# Run inside the Ubuntu VM after a dev session or before host commit/push:
+# VM → 宿主机 VMware 共享文件夹（单向覆盖，不拉取）
+#
+# 用法：
 #   bash ~/inspection-robot/scripts/sync_to_share.sh
 #
-# Pair with sync_from_share.sh (host -> VM) when you edit on the host instead.
+# 典型流程（Git push 失败时）：
+#   bash ~/inspection-robot/scripts/git_sync_push.sh "feat: xxx"
+#   # push 失败会自动调用本脚本
 
-set -euo pipefail
+set -eo pipefail
 
 PROJECT_NAME="基于YOLO+ROS2的智能巡检机器人仿真系统"
 SRC="${SRC_DIR:-$HOME/inspection-robot}"
@@ -21,7 +24,7 @@ else
       break
     fi
   done
-  SHARE="${SHARE:-/mnt/a_xm/${PROJECT_NAME}}"
+  SHARE="${SHARE:-/mnt/hgfs/a_xm/${PROJECT_NAME}}"
 fi
 
 if [[ ! -d "$SHARE" ]]; then
@@ -34,6 +37,11 @@ fi
 
 mkdir -p "$SHARE"
 
+echo ">>> VM → 共享文件夹（镜像覆盖，不碰 VM 本地 .git）"
+echo "    源: $SRC"
+echo "    目标: $SHARE"
+echo ""
+
 rsync -a --delete \
   --exclude '.git/' \
   --exclude 'ros2_ws/build/' \
@@ -45,5 +53,5 @@ rsync -a --delete \
   --exclude '.workbuddy/' \
   "$SRC"/ "$SHARE"/
 
-echo "同步完成: $SRC -> $SHARE"
-echo "提示: 宿主机打开共享文件夹即可看到最新代码；正式 push 仍在宿主机执行 sync_push.ps1。"
+echo ""
+echo "同步完成。宿主机打开共享文件夹即可看到最新代码。"

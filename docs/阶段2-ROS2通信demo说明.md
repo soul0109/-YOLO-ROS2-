@@ -131,10 +131,11 @@ inspection_demos/
 
 ## 5. 编译与运行（Ubuntu VM）
 
-### 5.1 同步代码（宿主机改完后）
+### 5.1 同步到宿主机（VM 开发完成后）
 
 ```bash
-bash ~/inspection-robot/scripts/sync_from_share.sh
+bash ~/inspection-robot/scripts/git_sync_push.sh "feat: stage2 demo"
+# push 失败会自动 sync_to_share 到共享文件夹
 ```
 
 ### 5.2 编译

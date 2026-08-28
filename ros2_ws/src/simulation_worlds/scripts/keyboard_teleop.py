@@ -95,6 +95,12 @@ class KeyboardTeleop(Node):
         self._pub = self.create_publisher(Twist, topic, CMD_VEL_QOS)
         self.create_timer(1.0 / rate_hz, self._on_timer)
 
+        if not sys.stdin.isatty():
+            raise RuntimeError(
+                'keyboard_teleop 必须在交互式终端运行。\n'
+                '请用: bash ~/inspection-robot/scripts/run_gazebo_teleop.sh --build'
+            )
+
         self._term_settings = termios.tcgetattr(sys.stdin)
         tty.setraw(sys.stdin.fileno())
         print(HELP, flush=True)

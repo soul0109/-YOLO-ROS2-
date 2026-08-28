@@ -1,12 +1,9 @@
 #!/usr/bin/env python3
 """
-阶段 3.3 一键启动：Gazebo + robot_v0 + 方向键遥控。
+[已废弃] 键盘节点不能放在 launch 里（无 TTY 会 termios 崩溃）。
 
-用法：
-  ros2 launch simulation_worlds gazebo_robot_v0_teleop.launch.py
-
-或项目根目录：
-  bash scripts/run_gazebo_teleop.sh --build
+请用：
+  bash ~/inspection-robot/scripts/run_gazebo_teleop.sh --build
 """
 
 import os
