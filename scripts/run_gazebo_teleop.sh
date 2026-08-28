@@ -18,6 +18,8 @@ source /opt/ros/humble/setup.bash
 echo ">>> 关闭旧 Gazebo 进程..."
 pkill -f gzserver 2>/dev/null || true
 pkill -f gzclient 2>/dev/null || true
+pkill -f cmd_vel_timeout 2>/dev/null || true
+pkill -f 'gazebo_robot_v0' 2>/dev/null || true
 pkill -f 'gazebo.launch' 2>/dev/null || true
 sleep 1
 

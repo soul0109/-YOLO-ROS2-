@@ -75,7 +75,7 @@ class KeyboardTeleop(Node):
     def __init__(self) -> None:
         super().__init__('keyboard_teleop')
 
-        self.declare_parameter('use_sim_time', True)
+        # use_sim_time 由 launch 注入，勿在此 declare
         self.declare_parameter('cmd_vel_topic', 'cmd_vel')
         self.declare_parameter('linear_speed', 0.15)
         self.declare_parameter('angular_speed', 0.5)

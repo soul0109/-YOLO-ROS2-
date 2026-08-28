@@ -11,9 +11,16 @@ from __future__ import annotations
 import rclpy
 from geometry_msgs.msg import Twist
 from rclpy.node import Node
-from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
+from rclpy.qos import (
+    DurabilityPolicy,
+    HistoryPolicy,
+    QoSProfile,
+    ReliabilityPolicy,
+    qos_profile_system_default,
+)
 
-CMD_VEL_QOS = QoSProfile(
+# 发给 Gazebo 插件：必须 RELIABLE（与 libgazebo_ros_diff_drive 一致）
+CMD_VEL_OUT_QOS = QoSProfile(
     reliability=ReliabilityPolicy.RELIABLE,
     durability=DurabilityPolicy.VOLATILE,
     history=HistoryPolicy.KEEP_LAST,
@@ -27,7 +34,7 @@ class CmdVelTimeout(Node):
     def __init__(self) -> None:
         super().__init__('cmd_vel_timeout')
 
-        self.declare_parameter('use_sim_time', True)
+        # use_sim_time 由 launch 注入，勿在此 declare（会 ParameterAlreadyDeclaredException 崩溃）
         self.declare_parameter('timeout_sec', 0.5)
         self.declare_parameter('input_topic', 'cmd_vel')
         self.declare_parameter('output_topic', 'cmd_vel_gazebo')
@@ -42,8 +49,9 @@ class CmdVelTimeout(Node):
         self._last_cmd_time = self.get_clock().now()
         self._has_cmd = False
 
-        self._pub = self.create_publisher(Twist, output_topic, CMD_VEL_QOS)
-        self.create_subscription(Twist, input_topic, self._on_cmd_vel, CMD_VEL_QOS)
+        self._pub = self.create_publisher(Twist, output_topic, CMD_VEL_OUT_QOS)
+        # 输入用 system_default，兼容 ros2 topic pub / 键盘 / Nav2
+        self.create_subscription(Twist, input_topic, self._on_cmd_vel, qos_profile_system_default)
         self.create_timer(1.0 / rate_hz, self._on_timer)
 
         self.get_logger().info(

@@ -22,9 +22,13 @@ if ! xacro "$WS/src/robot_description/urdf/robot_v0.urdf.xacro" 2>/dev/null | gr
 fi
 echo "OK: diff_drive remapping cmd_vel:=cmd_vel_gazebo"
 
-echo ">>> [3/6] 关闭旧 Gazebo..."
+echo ">>> [3/6] 关闭旧 Gazebo / 残留节点..."
 pkill -f gzserver 2>/dev/null || true
 pkill -f gzclient 2>/dev/null || true
+pkill -f cmd_vel_timeout 2>/dev/null || true
+pkill -f 'gazebo_robot_v0' 2>/dev/null || true
+pkill -f patrol_action 2>/dev/null || true
+pkill -f log_publisher 2>/dev/null || true
 sleep 2
 
 echo ">>> [4/6] 启动仿真（无键盘节点）..."
@@ -57,6 +61,11 @@ fi
 echo "OK: /cmd_vel_gazebo 已存在"
 
 echo ">>> [5/6] 检查中继节点与插件..."
+if ! ros2 node list 2>/dev/null | grep -q '/cmd_vel_timeout'; then
+  echo "FAIL: cmd_vel_timeout 节点未运行（启动即崩溃？）"
+  grep -A8 'cmd_vel_timeout' "$LOG.launch" | tail -15 || true
+  exit 1
+fi
 TOPIC_INFO=$(ros2 topic info /cmd_vel_gazebo -v 2>&1 || true)
 echo "$TOPIC_INFO" | grep -q 'Node name: cmd_vel_timeout' || {
   echo "FAIL: cmd_vel_timeout 未发布 /cmd_vel_gazebo"
@@ -70,7 +79,6 @@ fi
 echo "OK: cmd_vel_timeout 正在发布"
 
 echo ">>> [6/6] 测试前进 + 超时刹车..."
-# 等 /cmd_vel 订阅就绪（DDS 发现）
 for i in $(seq 1 15); do
   if ros2 topic info /cmd_vel -v 2>/dev/null | grep -q 'Node name: cmd_vel_timeout'; then
     break
@@ -78,24 +86,11 @@ for i in $(seq 1 15); do
   sleep 1
 done
 
-timeout 2 ros2 topic pub /cmd_vel geometry_msgs/msg/Twist \
-  "{linear: {x: 0.15, y: 0.0, z: 0.0}, angular: {x: 0.0, y: 0.0, z: 0.0}}" -r 20 >/dev/null 2>&1 || true
-sleep 0.2
-FORWARD=$(timeout 3 ros2 topic echo /cmd_vel_gazebo --once 2>/dev/null || true)
-echo "$FORWARD" | grep -q "x: 0.15" || {
-  echo "FAIL: 转发后 linear.x 不是 0.15"
-  echo "$FORWARD"
-  exit 1
-}
+ros2 run simulation_worlds test_cmd_vel_relay.py forward || exit 1
 echo "OK: 前进命令已转发"
 
 sleep 0.8
-STOP=$(timeout 3 ros2 topic echo /cmd_vel_gazebo --once 2>/dev/null || true)
-echo "$STOP" | grep -q "x: 0.0" || {
-  echo "FAIL: 超时后未刹车为零"
-  echo "$STOP"
-  exit 1
-}
+ros2 run simulation_worlds test_cmd_vel_relay.py stop || exit 1
 echo "OK: 超时刹车为零"
 
 echo ""
