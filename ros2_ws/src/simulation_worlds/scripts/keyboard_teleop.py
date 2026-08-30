@@ -3,6 +3,9 @@
 robot_v0 键盘遥控 → /cmd_vel
 
 按住 W/A/S/D 或方向键持续运动，可组合（如 W+A 前进左转）；松手后超时停止；空格急停。
+
+按键状态：每个方向独立记「最后一次按下时间」。
+Linux 终端同时只 auto-repeat 一个键 → W+A 时只有 A 在 repeat，必须用 A 的 repeat 给 W 续命。
 """
 
 from __future__ import annotations
@@ -58,6 +61,14 @@ _AXIS_LABELS: dict[str, str] = {
     'back': '后退',
     'left': '左转',
     'right': '右转',
+}
+
+# 同轴互斥：按 W 时清掉 S 的时间戳，反之亦然
+_AXIS_OPPOSITE: dict[str, str] = {
+    'fwd': 'back',
+    'back': 'fwd',
+    'left': 'right',
+    'right': 'left',
 }
 
 _LINEAR_AXES = frozenset({'fwd', 'back'})
@@ -153,11 +164,8 @@ class KeyboardTeleop(Node):
         self._twist = Twist()
         self._moving = False
         self._last_label: Optional[str] = None
-        # 线速度 / 角速度分通道：终端同时只重复一个键，不能按「每键超时」判松手
-        self._linear_dir: Optional[str] = None
-        self._linear_ts = 0.0
-        self._angular_dir: Optional[str] = None
-        self._angular_ts = 0.0
+        # 每个方向独立超时：W 与 A/D 互不影响
+        self._axis_last_seen: dict[str, float] = {}
         self._keys = KeyReader()
 
         self._pub = self.create_publisher(Twist, topic, qos_profile_system_default)
@@ -179,12 +187,18 @@ class KeyboardTeleop(Node):
         return super().destroy_node()
 
     def _active_axes(self) -> set[str]:
-        axes: set[str] = set()
-        if self._linear_dir:
-            axes.add(self._linear_dir)
-        if self._angular_dir:
-            axes.add(self._angular_dir)
-        return axes
+        """返回仍在按住窗口内的方向（超时未续则剔除）。"""
+        now = time.monotonic()
+        alive: set[str] = set()
+        expired: list[str] = []
+        for axis, ts in self._axis_last_seen.items():
+            if now - ts <= self._release_timeout:
+                alive.add(axis)
+            else:
+                expired.append(axis)
+        for axis in expired:
+            del self._axis_last_seen[axis]
+        return alive
 
     @staticmethod
     def _format_label(alive: set[str]) -> str:
@@ -238,8 +252,7 @@ class KeyboardTeleop(Node):
     def _publish_stop(self, manual: bool = False) -> None:
         if self._moving and manual:
             self.get_logger().info('急停')
-        self._linear_dir = None
-        self._angular_dir = None
+        self._axis_last_seen.clear()
         self._twist = Twist()
         self._moving = False
         self._last_label = None
@@ -247,55 +260,44 @@ class KeyboardTeleop(Node):
 
     def _touch_axis(self, axis: str) -> None:
         now = time.monotonic()
-        if axis in _LINEAR_AXES:
-            self._linear_dir = axis
-            self._linear_ts = now
-        elif axis in _ANGULAR_AXES:
-            self._angular_dir = axis
-            self._angular_ts = now
-            if self._linear_dir:
-                self._linear_ts = now
+        opposite = _AXIS_OPPOSITE.get(axis)
+        if opposite is not None:
+            self._axis_last_seen.pop(opposite, None)
+        self._axis_last_seen[axis] = now
+
+        # 关键：TTY 同时只 repeat 一个键。W+A 时通常只有 A/D 在 repeat，
+        # W/S 收不到 repeat → 0.8s 后被误判松手（日志：前进+左转 → 左转 → 停）。
+        # 任一通道收到 repeat 时，给另一通道里仍「按住」的轴续命。
+        if axis in _ANGULAR_AXES:
+            for lin in _LINEAR_AXES:
+                if lin in self._axis_last_seen:
+                    self._axis_last_seen[lin] = now
+        elif axis in _LINEAR_AXES:
+            for ang in _ANGULAR_AXES:
+                if ang in self._axis_last_seen:
+                    self._axis_last_seen[ang] = now
+
         self._sync_twist(log_stop=False)
 
-    def _expire_keys(self) -> None:
-        now = time.monotonic()
-        angular_cleared = False
-
-        if self._angular_dir and now - self._angular_ts > self._release_timeout:
-            self._angular_dir = None
-            angular_cleared = True
-
-        if self._linear_dir:
-            if self._angular_dir is None:
-                if angular_cleared:
-                    # 转弯结束：给 W/S 自动重复一点时间恢复
-                    self._linear_ts = now
-                elif now - self._linear_ts > self._release_timeout:
-                    self._linear_dir = None
-            # 转弯中冻结线速度超时（D 会抢走 W 的 key repeat）
-
-        self._sync_twist()
-
     def _on_timer(self) -> None:
-        self._expire_keys()
+        self._sync_twist()
         if self._moving:
             self._pub.publish(self._twist)
 
     def spin_keyboard(self) -> None:
+        # 先读键再 spin：避免 timer 里的超时逻辑抢在按键之前把 W/S 清掉
         while rclpy.ok():
-            rclpy.spin_once(self, timeout_sec=0.0)
             raw = self._keys.poll(0.05)
-            if raw is None:
-                continue
-            if raw in ('q', 'QUIT'):
-                break
-            if raw == ' ':
-                self._publish_stop(manual=True)
-                continue
-
-            action = raw if raw in _ACTION_TO_AXIS else _LETTER_KEYS.get(raw)
-            if action:
-                self._touch_axis(_ACTION_TO_AXIS[action])
+            if raw is not None:
+                if raw in ('q', 'QUIT'):
+                    break
+                if raw == ' ':
+                    self._publish_stop(manual=True)
+                else:
+                    action = raw if raw in _ACTION_TO_AXIS else _LETTER_KEYS.get(raw)
+                    if action:
+                        self._touch_axis(_ACTION_TO_AXIS[action])
+            rclpy.spin_once(self, timeout_sec=0.0)
 
 
 def main() -> None:

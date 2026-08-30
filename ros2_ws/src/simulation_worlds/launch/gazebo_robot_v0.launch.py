@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
 """
-阶段 3.2+3.3：Gazebo 空世界 spawn robot_v0 + 差速驱动。
+阶段 3.2+3.3+3.4：Gazebo spawn robot_v0 + 差速驱动 + 激光 /scan。
 
 启动内容：
-  1. Gazebo（empty.world）
+  1. Gazebo（默认 empty.world；可改 world:=lidar_test.world）
   2. robot_state_publisher（URDF + TF，use_sim_time）
   3. spawn_entity（略高于地面落下）
   4. Gazebo 插件（写在 robot_v0.gazebo.xacro）：
      - joint_state_publisher → /joint_states
-     - diff_drive → /cmd_vel_gazebo（经超时中继）、/odom、odom→base_footprint TF
+     - diff_drive → /cmd_vel_gazebo、/odom、odom→base_footprint TF
+     - ray 激光 → /scan（frame_id=laser_link）
   5. cmd_vel_timeout 节点：/cmd_vel → /cmd_vel_gazebo，超时自动刹车
 """
 
@@ -29,9 +30,11 @@ def generate_launch_description() -> LaunchDescription:
     pkg_gazebo_ros = get_package_share_directory('gazebo_ros')
 
     xacro_file = os.path.join(pkg_robot, 'urdf', 'robot_v0.urdf.xacro')
-    world_file = os.path.join(pkg_worlds, 'worlds', 'empty.world')
+    default_world = os.path.join(pkg_worlds, 'worlds', 'empty.world')
 
-    use_sim_time = LaunchConfiguration('use_sim_time', default='true')
+    use_sim_time = LaunchConfiguration('use_sim_time')
+    world = LaunchConfiguration('world')
+    gui = LaunchConfiguration('gui')
 
     robot_description = ParameterValue(
         Command(['xacro ', xacro_file]),
@@ -42,7 +45,11 @@ def generate_launch_description() -> LaunchDescription:
         PythonLaunchDescriptionSource(
             os.path.join(pkg_gazebo_ros, 'launch', 'gazebo.launch.py'),
         ),
-        launch_arguments={'world': world_file, 'verbose': 'false'}.items(),
+        launch_arguments={
+            'world': world,
+            'verbose': 'false',
+            'gui': gui,
+        }.items(),
     )
 
     robot_state_publisher = Node(
@@ -87,6 +94,16 @@ def generate_launch_description() -> LaunchDescription:
             'use_sim_time',
             default_value='true',
             description='Gazebo 仿真时钟',
+        ),
+        DeclareLaunchArgument(
+            'world',
+            default_value=default_world,
+            description='Gazebo world 文件路径；激光验收可用 lidar_test.world',
+        ),
+        DeclareLaunchArgument(
+            'gui',
+            default_value='true',
+            description='是否启动 gzclient；冒烟测试可设 false',
         ),
         gazebo,
         robot_state_publisher,

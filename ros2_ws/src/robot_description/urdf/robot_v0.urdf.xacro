@@ -7,7 +7,8 @@
       └── base_link（车身中心）
             ├── left_wheel_link
             ├── right_wheel_link
-            └── caster_link（万向支撑轮）
+            ├── caster_link（万向支撑轮）
+            └── laser_link（阶段 3.4 激光雷达）
 
   单位：米（SI）
 -->
@@ -30,6 +31,23 @@
   <xacro:property name="caster_mass" value="0.2"/>
   <!-- 万向轮在车头（+X） -->
   <xacro:property name="caster_offset_x" value="0.14"/>
+
+  <!-- 激光：小圆柱装在车身上方偏前，光心 = laser_link -->
+  <xacro:property name="laser_radius" value="0.03"/>
+  <xacro:property name="laser_height" value="0.04"/>
+  <xacro:property name="laser_mass" value="0.1"/>
+  <!-- 相对 base_link 前移 5cm，让雷达略靠车头 -->
+  <xacro:property name="laser_offset_x" value="0.05"/>
+  <!-- 雷达中心 z = 底盘半高 + 雷达半高，使雷达底面刚好贴在车顶 -->
+  <xacro:property name="laser_offset_z" value="${base_height / 2.0 + laser_height / 2.0}"/>
+  <!--
+    /scan 的 range_min（Gazebo 插件用）。
+    小于此距离的命中 → /scan 里变 inf，RViz 不画。
+    取 0.30：大于雷达到车身外轮廓水平距离（约 0.25m），留余量避免车顶一圈红点。
+  -->
+  <xacro:property name="laser_scan_min_range" value="0.30"/>
+  <!-- 光心再抬高 3cm（在圆柱顶面之上），进一步远离车身碰撞体 -->
+  <xacro:property name="laser_scan_z_offset" value="0.03"/>
 
   <!-- base_link 中心离地高度 = 轮半径 + 底盘半高 -->
   <xacro:property name="base_z" value="${wheel_radius + base_height / 2.0}"/>
@@ -211,6 +229,31 @@
     <child link="caster_link"/>
     <!-- 万向轮底部接触地面：球心 z = -(base_z - caster_radius) 相对 base_link -->
     <origin xyz="${caster_offset_x} 0 ${-(base_z - caster_radius)}" rpy="0 0 0"/>
+  </joint>
+
+  <!-- ========== 激光雷达（阶段 3.4）：固定在车顶，frame_id = laser_link ========== -->
+  <!--
+    只保留 visual，不要 collision：
+    Gazebo ray 从 link 原点水平出射，若外壳带碰撞体，射线会先打到自己（你看到的车身红点）。
+    真机雷达同理：支架不参与测距，只有光心坐标有意义。
+  -->
+  <link name="laser_link">
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <cylinder radius="${laser_radius}" length="${laser_height}"/>
+      </geometry>
+      <material name="red">
+        <color rgba="0.9 0.1 0.1 1.0"/>
+      </material>
+    </visual>
+    <xacro:sphere_inertial mass="${laser_mass}" radius="${laser_radius}"/>
+  </link>
+
+  <joint name="laser_joint" type="fixed">
+    <parent link="base_link"/>
+    <child link="laser_link"/>
+    <origin xyz="${laser_offset_x} 0 ${laser_offset_z}" rpy="0 0 0"/>
   </joint>
 
   <!-- Gazebo 物理参数（阶段 3.2+） -->
