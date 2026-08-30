@@ -8,7 +8,8 @@
 # 用法：
 #   bash ~/inspection-robot/scripts/run_gazebo_camera_teleop.sh
 #   bash ~/inspection-robot/scripts/run_gazebo_camera_teleop.sh --build
-#   bash ~/inspection-robot/scripts/run_gazebo_camera_teleop.sh --world empty.world
+#   bash ~/inspection-robot/scripts/run_gazebo_camera_teleop.sh --world test_room.world
+#   INSPECTION_GAZEBO_WORLD=test_room.world bash ~/inspection-robot/scripts/run_gazebo_camera_teleop.sh
 #   bash ~/inspection-robot/scripts/run_gazebo_camera_teleop.sh --no-camera
 #   bash ~/inspection-robot/scripts/run_gazebo_camera_teleop.sh --log-window
 
@@ -76,6 +77,9 @@ fi
 source install/setup.bash
 
 PKG_WORLDS="$(ros2 pkg prefix simulation_worlds)/share/simulation_worlds/worlds"
+if [[ -z "$WORLD_FILE" && -n "${INSPECTION_GAZEBO_WORLD:-}" ]]; then
+  WORLD_FILE="${INSPECTION_GAZEBO_WORLD}"
+fi
 if [[ -z "$WORLD_FILE" ]]; then
   WORLD_FILE="${PKG_WORLDS}/lidar_test.world"
 elif [[ "$WORLD_FILE" != /* ]]; then

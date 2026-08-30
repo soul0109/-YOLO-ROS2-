@@ -1,0 +1,439 @@
+<?xml version="1.0" ?>
+<!--
+  阶段 4.1：test_room 巡检世界（仅场景，不含 Nav2/SLAM）
+
+  房间：外墙 7.0 × 5.0 m，墙厚 0.1 m，墙高 1.0 m
+  内廓（地面可用区）：X ∈ [-0.5, 6.3]，Y ∈ [-0.5, 4.3]（净 6.8 × 4.8 m）
+  机器人 spawn：launch 默认原点 (0, 0)，朝 +X 面向房间内部（近西南角）
+
+  ── 设备柜位姿（柜体中心，size 0.8W × 0.4D × 1.2H，贴墙内侧）──
+  柜 A（北墙，3×绿）：  (1.5,  4.1, 0.6)  正面朝 -Y
+  柜 B（东墙，2绿+1红）：(6.1,  2.5, 0.6)  正面朝 -X
+  柜 C（西墙，2绿+1黄）：(-0.3, 2.5, 0.6)  正面朝 +X
+
+  ── 停车点（各柜正面外 1.2 m，T7/T8 航点雏形）──
+  停车 A： (1.5, 2.7, 0)  车头朝 -Y（面向柜 A）
+  停车 B： (4.7, 2.5, 0)  车头朝 -X（面向柜 B）
+  停车 C： (1.1, 2.5, 0)  车头朝 +X（面向柜 C）
+-->
+<sdf version="1.6">
+  <world name="test_room">
+
+    <physics type="ode">
+      <max_step_size>0.001</max_step_size>
+      <real_time_factor>1.0</real_time_factor>
+    </physics>
+
+    <scene>
+      <ambient>0.55 0.55 0.55 1</ambient>
+      <background>0.75 0.78 0.82 1</background>
+      <shadows>true</shadows>
+    </scene>
+
+    <light type="directional" name="sun">
+      <cast_shadows>true</cast_shadows>
+      <pose>0 0 10 0 0.6 0</pose>
+      <diffuse>0.9 0.9 0.85 1</diffuse>
+      <specular>0.3 0.3 0.3 1</specular>
+      <direction>-0.3 0.1 -1</direction>
+    </light>
+
+    <include>
+      <uri>model://ground_plane</uri>
+    </include>
+
+    <!-- ═══════════════ 外墙（7 × 5 m 外廓，高 1.0 m）═══════════════ -->
+    <model name="wall_south">
+      <pose>2.9 -0.55 0.5 0 0 0</pose>
+      <static>true</static>
+      <link name="link">
+        <collision name="collision">
+          <geometry><box><size>7.0 0.1 1.0</size></box></geometry>
+          <laser_retro>80.0</laser_retro>
+        </collision>
+        <visual name="visual">
+          <geometry><box><size>7.0 0.1 1.0</size></box></geometry>
+          <material>
+            <script>
+              <uri>file://media/materials/scripts/gazebo.material</uri>
+              <name>Gazebo/Grey</name>
+            </script>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+    <model name="wall_north">
+      <pose>2.9 4.35 0.5 0 0 0</pose>
+      <static>true</static>
+      <link name="link">
+        <collision name="collision">
+          <geometry><box><size>7.0 0.1 1.0</size></box></geometry>
+          <laser_retro>80.0</laser_retro>
+        </collision>
+        <visual name="visual">
+          <geometry><box><size>7.0 0.1 1.0</size></box></geometry>
+          <material>
+            <script>
+              <uri>file://media/materials/scripts/gazebo.material</uri>
+              <name>Gazebo/Grey</name>
+            </script>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+    <model name="wall_west">
+      <pose>-0.55 1.9 0.5 0 0 0</pose>
+      <static>true</static>
+      <link name="link">
+        <collision name="collision">
+          <geometry><box><size>0.1 5.0 1.0</size></box></geometry>
+          <laser_retro>80.0</laser_retro>
+        </collision>
+        <visual name="visual">
+          <geometry><box><size>0.1 5.0 1.0</size></box></geometry>
+          <material>
+            <script>
+              <uri>file://media/materials/scripts/gazebo.material</uri>
+              <name>Gazebo/Grey</name>
+            </script>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+    <model name="wall_east">
+      <pose>6.35 1.9 0.5 0 0 0</pose>
+      <static>true</static>
+      <link name="link">
+        <collision name="collision">
+          <geometry><box><size>0.1 5.0 1.0</size></box></geometry>
+          <laser_retro>80.0</laser_retro>
+        </collision>
+        <visual name="visual">
+          <geometry><box><size>0.1 5.0 1.0</size></box></geometry>
+          <material>
+            <script>
+              <uri>file://media/materials/scripts/gazebo.material</uri>
+              <name>Gazebo/Grey</name>
+            </script>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+    <!-- ═══════════════ 障碍箱 ×2（激光路标，0.5³×0.8）═══════════════ -->
+    <model name="obstacle_box_1">
+      <pose>3.2 0.9 0.4 0 0 0</pose>
+      <static>true</static>
+      <link name="link">
+        <collision name="collision">
+          <geometry><box><size>0.5 0.5 0.8</size></box></geometry>
+          <laser_retro>90.0</laser_retro>
+        </collision>
+        <visual name="visual">
+          <geometry><box><size>0.5 0.5 0.8</size></box></geometry>
+          <material>
+            <script>
+              <uri>file://media/materials/scripts/gazebo.material</uri>
+              <name>Gazebo/Wood</name>
+            </script>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+    <model name="obstacle_box_2">
+      <pose>3.2 3.5 0.4 0 0 0</pose>
+      <static>true</static>
+      <link name="link">
+        <collision name="collision">
+          <geometry><box><size>0.5 0.5 0.8</size></box></geometry>
+          <laser_retro>90.0</laser_retro>
+        </collision>
+        <visual name="visual">
+          <geometry><box><size>0.5 0.5 0.8</size></box></geometry>
+          <material>
+            <script>
+              <uri>file://media/materials/scripts/gazebo.material</uri>
+              <name>Gazebo/Wood</name>
+            </script>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+    <!-- ═══════════════ 柜 A（北墙，3×绿）中心 (1.5, 4.1, 0.6) ═══════════════ -->
+    <model name="cabinet_a">
+      <pose>1.5 4.1 0.6 0 0 0</pose>
+      <static>true</static>
+      <link name="body">
+        <collision name="collision">
+          <geometry><box><size>0.8 0.4 1.2</size></box></geometry>
+          <laser_retro>70.0</laser_retro>
+        </collision>
+        <visual name="visual">
+          <geometry><box><size>0.8 0.4 1.2</size></box></geometry>
+          <material>
+            <ambient>0.35 0.35 0.38 1</ambient>
+            <diffuse>0.45 0.45 0.48 1</diffuse>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+    <model name="cabinet_a_led_1">
+      <pose>1.35 3.885 0.45 1.5708 0 0</pose>
+      <static>true</static>
+      <link name="link">
+        <visual name="visual">
+          <geometry><cylinder><radius>0.04</radius><length>0.02</length></cylinder></geometry>
+          <material>
+            <ambient>0 0.8 0 1</ambient>
+            <diffuse>0 0.6 0 1</diffuse>
+            <emissive>0 1 0 1</emissive>
+          </material>
+        </visual>
+      </link>
+    </model>
+    <model name="cabinet_a_led_2">
+      <pose>1.5 3.885 0.45 1.5708 0 0</pose>
+      <static>true</static>
+      <link name="link">
+        <visual name="visual">
+          <geometry><cylinder><radius>0.04</radius><length>0.02</length></cylinder></geometry>
+          <material>
+            <ambient>0 0.8 0 1</ambient>
+            <diffuse>0 0.6 0 1</diffuse>
+            <emissive>0 1 0 1</emissive>
+          </material>
+        </visual>
+      </link>
+    </model>
+    <model name="cabinet_a_led_3">
+      <pose>1.65 3.885 0.45 1.5708 0 0</pose>
+      <static>true</static>
+      <link name="link">
+        <visual name="visual">
+          <geometry><cylinder><radius>0.04</radius><length>0.02</length></cylinder></geometry>
+          <material>
+            <ambient>0 0.8 0 1</ambient>
+            <diffuse>0 0.6 0 1</diffuse>
+            <emissive>0 1 0 1</emissive>
+          </material>
+        </visual>
+      </link>
+    </model>
+    <model name="cabinet_a_panel">
+      <pose>1.5 3.882 0.30 0 0 0</pose>
+      <static>true</static>
+      <link name="link">
+        <visual name="visual">
+          <geometry><box><size>0.30 0.01 0.15</size></box></geometry>
+          <material>
+            <ambient>0.05 0.05 0.08 1</ambient>
+            <diffuse>0.08 0.08 0.12 1</diffuse>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+    <!-- ═══════════════ 柜 B（东墙，2绿+1红）中心 (6.1, 2.5, 0.6) ═══════════════ -->
+    <model name="cabinet_b">
+      <pose>6.1 2.5 0.6 0 0 0</pose>
+      <static>true</static>
+      <link name="body">
+        <collision name="collision">
+          <geometry><box><size>0.4 0.8 1.2</size></box></geometry>
+          <laser_retro>70.0</laser_retro>
+        </collision>
+        <visual name="visual">
+          <geometry><box><size>0.4 0.8 1.2</size></box></geometry>
+          <material>
+            <ambient>0.35 0.35 0.38 1</ambient>
+            <diffuse>0.45 0.45 0.48 1</diffuse>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+    <model name="cabinet_b_led_1">
+      <pose>5.885 2.35 0.45 0 1.5708 0</pose>
+      <static>true</static>
+      <link name="link">
+        <visual name="visual">
+          <geometry><cylinder><radius>0.04</radius><length>0.02</length></cylinder></geometry>
+          <material>
+            <ambient>0 0.8 0 1</ambient>
+            <diffuse>0 0.6 0 1</diffuse>
+            <emissive>0 1 0 1</emissive>
+          </material>
+        </visual>
+      </link>
+    </model>
+    <model name="cabinet_b_led_2">
+      <pose>5.885 2.5 0.45 0 1.5708 0</pose>
+      <static>true</static>
+      <link name="link">
+        <visual name="visual">
+          <geometry><cylinder><radius>0.04</radius><length>0.02</length></cylinder></geometry>
+          <material>
+            <ambient>0 0.8 0 1</ambient>
+            <diffuse>0 0.6 0 1</diffuse>
+            <emissive>0 1 0 1</emissive>
+          </material>
+        </visual>
+      </link>
+    </model>
+    <model name="cabinet_b_led_3">
+      <pose>5.885 2.65 0.45 0 1.5708 0</pose>
+      <static>true</static>
+      <link name="link">
+        <visual name="visual">
+          <geometry><cylinder><radius>0.04</radius><length>0.02</length></cylinder></geometry>
+          <material>
+            <ambient>0.8 0 0 1</ambient>
+            <diffuse>0.6 0 0 1</diffuse>
+            <emissive>1 0 0 1</emissive>
+          </material>
+        </visual>
+      </link>
+    </model>
+    <model name="cabinet_b_panel">
+      <pose>5.882 2.5 0.30 0 0 0</pose>
+      <static>true</static>
+      <link name="link">
+        <visual name="visual">
+          <geometry><box><size>0.01 0.30 0.15</size></box></geometry>
+          <material>
+            <ambient>0.05 0.05 0.08 1</ambient>
+            <diffuse>0.08 0.08 0.12 1</diffuse>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+    <!-- ═══════════════ 柜 C（西墙，2绿+1黄）中心 (-0.3, 2.5, 0.6) ═══════════════ -->
+    <model name="cabinet_c">
+      <pose>-0.3 2.5 0.6 0 0 0</pose>
+      <static>true</static>
+      <link name="body">
+        <collision name="collision">
+          <geometry><box><size>0.4 0.8 1.2</size></box></geometry>
+          <laser_retro>70.0</laser_retro>
+        </collision>
+        <visual name="visual">
+          <geometry><box><size>0.4 0.8 1.2</size></box></geometry>
+          <material>
+            <ambient>0.35 0.35 0.38 1</ambient>
+            <diffuse>0.45 0.45 0.48 1</diffuse>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+    <model name="cabinet_c_led_1">
+      <pose>-0.085 2.35 0.45 0 1.5708 0</pose>
+      <static>true</static>
+      <link name="link">
+        <visual name="visual">
+          <geometry><cylinder><radius>0.04</radius><length>0.02</length></cylinder></geometry>
+          <material>
+            <ambient>0 0.8 0 1</ambient>
+            <diffuse>0 0.6 0 1</diffuse>
+            <emissive>0 1 0 1</emissive>
+          </material>
+        </visual>
+      </link>
+    </model>
+    <model name="cabinet_c_led_2">
+      <pose>-0.085 2.5 0.45 0 1.5708 0</pose>
+      <static>true</static>
+      <link name="link">
+        <visual name="visual">
+          <geometry><cylinder><radius>0.04</radius><length>0.02</length></cylinder></geometry>
+          <material>
+            <ambient>0 0.8 0 1</ambient>
+            <diffuse>0 0.6 0 1</diffuse>
+            <emissive>0 1 0 1</emissive>
+          </material>
+        </visual>
+      </link>
+    </model>
+    <model name="cabinet_c_led_3">
+      <pose>-0.085 2.65 0.45 0 1.5708 0</pose>
+      <static>true</static>
+      <link name="link">
+        <visual name="visual">
+          <geometry><cylinder><radius>0.04</radius><length>0.02</length></cylinder></geometry>
+          <material>
+            <ambient>0.8 0.8 0 1</ambient>
+            <diffuse>0.6 0.6 0 1</diffuse>
+            <emissive>1 1 0 1</emissive>
+          </material>
+        </visual>
+      </link>
+    </model>
+    <model name="cabinet_c_panel">
+      <pose>-0.082 2.5 0.30 0 0 0</pose>
+      <static>true</static>
+      <link name="link">
+        <visual name="visual">
+          <geometry><box><size>0.01 0.30 0.15</size></box></geometry>
+          <material>
+            <ambient>0.05 0.05 0.08 1</ambient>
+            <diffuse>0.08 0.08 0.12 1</diffuse>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+    <!-- ═══════════════ 停车区标记（visual only，无 collision）═══════════════ -->
+    <model name="parking_marker_a">
+      <pose>1.5 2.7 0.002 0 0 0</pose>
+      <static>true</static>
+      <link name="link">
+        <visual name="visual">
+          <geometry><box><size>0.5 0.5 0.004</size></box></geometry>
+          <material>
+            <ambient>0.1 0.4 0.9 1</ambient>
+            <diffuse>0.2 0.5 1.0 1</diffuse>
+            <emissive>0.05 0.15 0.4 1</emissive>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+    <model name="parking_marker_b">
+      <pose>4.7 2.5 0.002 0 0 0</pose>
+      <static>true</static>
+      <link name="link">
+        <visual name="visual">
+          <geometry><box><size>0.5 0.5 0.004</size></box></geometry>
+          <material>
+            <ambient>0.1 0.7 0.5 1</ambient>
+            <diffuse>0.2 0.8 0.6 1</diffuse>
+            <emissive>0.05 0.25 0.15 1</emissive>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+    <model name="parking_marker_c">
+      <pose>1.1 2.5 0.002 0 0 0</pose>
+      <static>true</static>
+      <link name="link">
+        <visual name="visual">
+          <geometry><box><size>0.5 0.5 0.004</size></box></geometry>
+          <material>
+            <ambient>0.7 0.3 0.8 1</ambient>
+            <diffuse>0.8 0.4 0.9 1</diffuse>
+            <emissive>0.25 0.1 0.3 1</emissive>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+  </world>
+</sdf>
