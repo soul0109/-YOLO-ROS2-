@@ -116,13 +116,13 @@ def generate_launch_description() -> LaunchDescription:
         ),
         DeclareLaunchArgument(
             'spawn_x',
-            default_value='0.0',
-            description='spawn 初始 x；test_room 建议 0.9',
+            default_value='0.9',
+            description='spawn 初始 x；test_room 充电位 0.9',
         ),
         DeclareLaunchArgument(
             'spawn_y',
-            default_value='0.0',
-            description='spawn 初始 y；test_room 建议 3.0',
+            default_value='3.0',
+            description='spawn 初始 y；test_room 充电位 3.0',
         ),
         DeclareLaunchArgument(
             'spawn_z',

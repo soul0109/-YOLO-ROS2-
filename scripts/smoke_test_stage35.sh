@@ -48,7 +48,7 @@ sleep 3
 
 echo ">>> [4/5] 启动仿真（lidar_test.world, gui:=false）..."
 ros2 launch simulation_worlds gazebo_robot_v0.launch.py \
-  "world:=${WORLD}" gui:=false >"$LOG.launch" 2>&1 &
+  "world:=${WORLD}" gui:=false spawn_x:=0.0 spawn_y:=0.0 >"$LOG.launch" 2>&1 &
 LAUNCH_PID=$!
 
 cleanup() {
