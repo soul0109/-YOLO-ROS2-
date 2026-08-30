@@ -98,18 +98,14 @@
     </sensor>
   </gazebo>
 
-  <gazebo reference="camera_mount_link">
-    <material>Gazebo/Grey</material>
-  </gazebo>
-
   <gazebo reference="camera_link">
     <material>Gazebo/Black</material>
     <!--
-      Gazebo 光轴默认 -Z；pitch +90° → 朝 base +X。
-      pose 必须写在 <camera> 之前；joint 禁止写 rpy（合并后 visual/sensor 会分裂）。
+      Gazebo Classic 相机光轴沿传感器 +X；camera_link 与 base_link 同向，恒等 pose 即朝车头。
+      pose 写在 <camera> 之前；joint 禁止写 rpy。
     -->
     <sensor name="camera" type="camera">
-      <pose>0 0 0 0 1.57079632679 0</pose>
+      <pose>0 0 0 0 0 0</pose>
       <always_on>true</always_on>
       <update_rate>10</update_rate>
       <visualize>true</visualize>
