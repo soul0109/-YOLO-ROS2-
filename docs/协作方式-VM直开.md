@@ -16,7 +16,7 @@ bash scripts/smoke_test_stage33.sh           # 自测刹车链（无需按键）
 | 方式 | 何时用 | VM 命令 | 宿主机 |
 |------|--------|---------|--------|
 | **A GitHub** | 网络通 | `bash scripts/git_sync_push.sh "feat: xxx"` | `git pull origin main` |
-| **B 共享文件夹** | push 失败 | 同上（脚本**自动** `sync_to_share`） | 直接打开共享目录里的项目 |
+| **B 共享文件夹** | push 成功/失败 | 同上（成功**也** `sync_to_share`；失败另生成 bundle） | 直接打开共享目录里的项目 |
 | **C bundle 离线包** | 没挂共享 | push 失败时生成 `~/inspection-robot-vm.bundle` | `git pull <bundle路径> main` |
 
 **一键（推荐）：**
@@ -25,14 +25,47 @@ bash scripts/smoke_test_stage33.sh           # 自测刹车链（无需按键）
 bash ~/inspection-robot/scripts/git_sync_push.sh "feat: 描述本次改动"
 ```
 
-- push **成功** → 宿主机 `git pull`
+- push **成功** → 宿主机 `git pull`；若已挂载 VMware 共享，脚本会**顺带** `sync_to_share`
 - push **失败** → 自动把 VM 代码镜像到共享文件夹 + 生成 bundle
 
-**仅同步共享文件夹（不 commit）：**
+## 每次推进：收工同步（固定习惯）
+
+VM 是唯一主环境。每完成一个小任务（改代码 / 改 world / 勾阶段），按下面做，宿主机和共享目录才能跟上。
+
+```text
+改代码 → VM 验收 → 更新 docs/当前进度.md（+ 对应阶段说明）→ git_sync_push.sh "msg"
+```
+
+| 改了什么 | 顺手更新 |
+|---|---|
+| 阶段进度、下一步、踩坑 | `docs/当前进度.md` |
+| 世界布局 / 坐标 / 验收 | `docs/阶段X说明.md` |
+| 任务顺序 / 验收闸门 | `docs/后续开发计划与建模攻关方案.md` |
+| 新增阶段说明 | `docs/README.md` 索引加一行 |
+
+**VM 一条命令（commit + push + 刷共享）：**
+
+```bash
+bash ~/inspection-robot/scripts/git_sync_push.sh "feat: 简短描述"
+```
+
+**宿主机接住：**
+
+```bash
+git pull origin main
+# 若 Cursor 开的是 VMware 共享文件夹而非 git clone，pull 后仍看不到时：
+# 在 VM 再执行 bash scripts/sync_to_share.sh
+```
+
+**仅刷共享文件夹（已 commit、不 push）：**
 
 ```bash
 bash ~/inspection-robot/scripts/sync_to_share.sh
 ```
+
+共享目录（脚本自动探测）：`/mnt/a_xm/基于YOLO+ROS2的智能巡检机器人仿真系统` 或 `/mnt/hgfs/a_xm/...`
+
+**勿用：** ~~`sync_from_share.sh`~~（单向 VM → 宿主机，反向会删 VM 新文件）
 
 ## 已删除 / 勿用
 

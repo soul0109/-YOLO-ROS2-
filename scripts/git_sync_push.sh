@@ -41,6 +41,11 @@ if git push -u origin HEAD; then
   echo "=========================================="
   echo "  推送成功。宿主机: git pull origin main"
   echo "=========================================="
+  if bash "${ROOT}/scripts/sync_to_share.sh" 2>/dev/null; then
+    echo "  共享文件夹已同步（VMware 共享已挂载）"
+  else
+    echo "  （共享文件夹未挂载，跳过 sync_to_share）"
+  fi
   exit 0
 fi
 
