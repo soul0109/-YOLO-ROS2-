@@ -3,6 +3,7 @@
   robot_v0 Gazebo 扩展
   3.2：材质 / 摩擦 / 接触
   3.3：差速驱动插件 + 关节状态发布（替代 joint_state_publisher 节点）
+  3.4：ray 激光 → /scan（sensor_msgs/LaserScan）
 -->
 <robot xmlns:xacro="http://www.ros.org/wiki/xacro">
 
@@ -38,6 +39,62 @@
     <mu2>0.1</mu2>
     <kp>1000000.0</kp>
     <kd>100.0</kd>
+  </gazebo>
+
+  <gazebo reference="laser_link">
+    <material>Gazebo/Red</material>
+    <!--
+      ========== 阶段 3.4：2D 激光雷达 ==========
+      数据流：Gazebo ray 传感器 → libgazebo_ros_ray_sensor.so → /scan (LaserScan)
+
+      自车红点（常见问题）：
+        1) 传感器装在 link 几何中心，水平射线会先撞到雷达外壳 collision
+        2) range.min 太小，近距车身角点没被滤掉
+      修法：laser_link 不要 collision；传感器 pose 抬到圆柱顶面；min_range ≥ 车身半径
+
+      圆柱方向线条稀疏（正常现象）：
+        远处小障碍物占的角度小。例：r=0.15m、距离≈1.6m → 张角约 11° → 360 线里只有 ~11 根打到柱子上，
+        其余射线穿过空隙打到墙或打到 max_range，所以 Gazebo 里看起来「稀」。
+    -->
+    <sensor name="laser" type="ray">
+      <always_on>true</always_on>
+      <!-- Gazebo 里蓝色射线；调试可看，验收以 RViz /scan 为准 -->
+      <visualize>true</visualize>
+      <update_rate>10</update_rate>
+      <!-- 光心：圆柱顶面 + 额外抬高，扫描平面远离蓝色车身 -->
+      <pose>0 0 ${laser_height / 2.0 + laser_scan_z_offset} 0 0 0</pose>
+      <ray>
+        <scan>
+          <horizontal>
+            <!-- 360 条射线，水平 360°，约 1° 一条 -->
+            <samples>360</samples>
+            <resolution>1.0</resolution>
+            <min_angle>-3.14159</min_angle>
+            <max_angle>3.14159</max_angle>
+          </horizontal>
+        </scan>
+        <range>
+          <!-- 小于 min 的命中在 /scan 里会变成 inf，RViz 不画 -->
+          <min>${laser_scan_min_range}</min>
+          <max>12.0</max>
+          <resolution>0.01</resolution>
+        </range>
+        <noise>
+          <type>gaussian</type>
+          <mean>0.0</mean>
+          <stddev>0.01</stddev>
+        </noise>
+      </ray>
+      <plugin name="gazebo_ros_laser" filename="libgazebo_ros_ray_sensor.so">
+        <ros>
+          <!-- ~/out 是插件默认话题名，remap 成导航栈习惯的 /scan -->
+          <remapping>~/out:=scan</remapping>
+        </ros>
+        <output_type>sensor_msgs/LaserScan</output_type>
+        <!-- TF / 消息 header.frame_id -->
+        <frame_name>laser_link</frame_name>
+      </plugin>
+    </sensor>
   </gazebo>
 
   <!-- 轮关节阻尼：静止时减少落地后「自己往前溜」 -->

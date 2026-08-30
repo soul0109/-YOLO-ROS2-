@@ -1,0 +1,103 @@
+<?xml version="1.0" ?>
+<!--
+  阶段 3.4：带障碍物的小世界，便于验收 /scan（空世界只有 max_range）。
+  机器人默认 spawn 在原点；四周有箱子/墙。
+-->
+<sdf version="1.6">
+  <world name="lidar_test">
+    <physics type="ode">
+      <max_step_size>0.001</max_step_size>
+      <real_time_factor>1.0</real_time_factor>
+    </physics>
+    <include>
+      <uri>model://ground_plane</uri>
+    </include>
+    <include>
+      <uri>model://sun</uri>
+    </include>
+
+    <!-- 前方箱子 -->
+    <model name="box_front">
+      <pose>2.0 0 0.25 0 0 0</pose>
+      <static>true</static>
+      <link name="link">
+        <collision name="collision">
+          <geometry><box><size>0.4 0.8 0.5</size></box></geometry>
+          <laser_retro>100.0</laser_retro>
+        </collision>
+        <visual name="visual">
+          <geometry><box><size>0.4 0.8 0.5</size></box></geometry>
+          <material>
+            <script>
+              <uri>file://media/materials/scripts/gazebo.material</uri>
+              <name>Gazebo/Wood</name>
+            </script>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+    <!-- 左侧墙 -->
+    <model name="wall_left">
+      <pose>0 1.5 0.5 0 0 0</pose>
+      <static>true</static>
+      <link name="link">
+        <collision name="collision">
+          <geometry><box><size>4.0 0.1 1.0</size></box></geometry>
+          <laser_retro>80.0</laser_retro>
+        </collision>
+        <visual name="visual">
+          <geometry><box><size>4.0 0.1 1.0</size></box></geometry>
+          <material>
+            <script>
+              <uri>file://media/materials/scripts/gazebo.material</uri>
+              <name>Gazebo/Grey</name>
+            </script>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+    <!-- 右侧墙 -->
+    <model name="wall_right">
+      <pose>0 -1.5 0.5 0 0 0</pose>
+      <static>true</static>
+      <link name="link">
+        <collision name="collision">
+          <geometry><box><size>4.0 0.1 1.0</size></box></geometry>
+          <laser_retro>80.0</laser_retro>
+        </collision>
+        <visual name="visual">
+          <geometry><box><size>4.0 0.1 1.0</size></box></geometry>
+          <material>
+            <script>
+              <uri>file://media/materials/scripts/gazebo.material</uri>
+              <name>Gazebo/Grey</name>
+            </script>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+    <!-- 后方柱子：半径 0.15m，距原点约 1.58m → 在 360° 扫描里只占 ~11 条射线，看起来会「稀」 -->
+    <model name="pillar_rear">
+      <pose>-1.5 0.5 0.4 0 0 0</pose>
+      <static>true</static>
+      <link name="link">
+        <collision name="collision">
+          <geometry><cylinder><radius>0.15</radius><length>0.8</length></cylinder></geometry>
+          <laser_retro>60.0</laser_retro>
+        </collision>
+        <visual name="visual">
+          <geometry><cylinder><radius>0.15</radius><length>0.8</length></cylinder></geometry>
+          <material>
+            <script>
+              <uri>file://media/materials/scripts/gazebo.material</uri>
+              <name>Gazebo/Blue</name>
+            </script>
+          </material>
+        </visual>
+      </link>
+    </model>
+  </world>
+</sdf>
