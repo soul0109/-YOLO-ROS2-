@@ -10,7 +10,16 @@ fi
 
 WS="${HOME}/inspection-robot/ros2_ws"
 LOG="/tmp/smoke_stage3_gate.log"
-WORLD="$WS/src/simulation_worlds/worlds/lidar_test.world"
+WORLD="${INSPECTION_GATE_WORLD:-$WS/src/simulation_worlds/worlds/lidar_test.world}"
+if [[ "$WORLD" != /* ]]; then
+  WORLD="$WS/src/simulation_worlds/worlds/$(basename "$WORLD")"
+fi
+SPAWN_X=0.0
+SPAWN_Y=0.0
+if [[ "$(basename "$WORLD")" == "test_room.world" ]]; then
+  SPAWN_X=0.9
+  SPAWN_Y=3.0
+fi
 
 source /opt/ros/humble/setup.bash
 cd "$WS"
@@ -26,9 +35,9 @@ pkill -f cmd_vel_timeout 2>/dev/null || true
 pkill -f 'gazebo_robot_v0.launch' 2>/dev/null || true
 sleep 3
 
-echo ">>> [3/6] 启动统一 launch（lidar_test.world, gui:=false）..."
+echo ">>> [3/6] 启动统一 launch（$(basename "$WORLD"), gui:=false, spawn ${SPAWN_X},${SPAWN_Y}）..."
 ros2 launch simulation_worlds gazebo_robot_v0.launch.py \
-  "world:=${WORLD}" gui:=false spawn_x:=0.0 spawn_y:=0.0 >"$LOG.launch" 2>&1 &
+  "world:=${WORLD}" gui:=false "spawn_x:=${SPAWN_X}" "spawn_y:=${SPAWN_Y}" >"$LOG.launch" 2>&1 &
 LAUNCH_PID=$!
 
 cleanup() {
