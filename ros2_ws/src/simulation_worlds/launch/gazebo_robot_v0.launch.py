@@ -36,6 +36,10 @@ def generate_launch_description() -> LaunchDescription:
     use_sim_time = LaunchConfiguration('use_sim_time')
     world = LaunchConfiguration('world')
     gui = LaunchConfiguration('gui')
+    spawn_x = LaunchConfiguration('spawn_x')
+    spawn_y = LaunchConfiguration('spawn_y')
+    spawn_z = LaunchConfiguration('spawn_z')
+    spawn_yaw = LaunchConfiguration('spawn_yaw')
 
     robot_description = ParameterValue(
         Command(['xacro ', xacro_file]),
@@ -72,7 +76,10 @@ def generate_launch_description() -> LaunchDescription:
         arguments=[
             '-entity', 'robot_v0',
             '-topic', 'robot_description',
-            '-z', '0.05',
+            '-x', spawn_x,
+            '-y', spawn_y,
+            '-z', spawn_z,
+            '-Y', spawn_yaw,
         ],
         output='screen',
     )
@@ -106,6 +113,26 @@ def generate_launch_description() -> LaunchDescription:
             'gui',
             default_value='true',
             description='是否启动 gzclient；冒烟测试可设 false',
+        ),
+        DeclareLaunchArgument(
+            'spawn_x',
+            default_value='0.0',
+            description='spawn 初始 x；test_room 建议 0.9',
+        ),
+        DeclareLaunchArgument(
+            'spawn_y',
+            default_value='0.0',
+            description='spawn 初始 y；test_room 建议 3.0',
+        ),
+        DeclareLaunchArgument(
+            'spawn_z',
+            default_value='0.05',
+            description='spawn 初始 z（略高于地面落下）',
+        ),
+        DeclareLaunchArgument(
+            'spawn_yaw',
+            default_value='0.0',
+            description='spawn 初始航向 yaw（rad）；test_room 起点朝 +X 为 0',
         ),
         gazebo,
         robot_state_publisher,

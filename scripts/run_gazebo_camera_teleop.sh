@@ -93,8 +93,16 @@ elif [[ "$WORLD_FILE" != /* ]]; then
   fi
 fi
 
+SPAWN_ARGS=""
+if [[ "$(basename "$WORLD_FILE")" == "test_room.world" ]]; then
+  SPAWN_X="${INSPECTION_SPAWN_X:-0.9}"
+  SPAWN_Y="${INSPECTION_SPAWN_Y:-3.0}"
+  SPAWN_YAW="${INSPECTION_SPAWN_YAW:-0.0}"
+  SPAWN_ARGS=" spawn_x:=${SPAWN_X} spawn_y:=${SPAWN_Y} spawn_yaw:=${SPAWN_YAW}"
+fi
+
 ROS_ENV="source /opt/ros/humble/setup.bash && source ${WS}/install/setup.bash"
-LAUNCH_CMD="${ROS_ENV} && ros2 launch simulation_worlds gazebo_robot_v0.launch.py world:=${WORLD_FILE}"
+LAUNCH_CMD="${ROS_ENV} && ros2 launch simulation_worlds gazebo_robot_v0.launch.py world:=${WORLD_FILE}${SPAWN_ARGS}"
 RQT_CMD="${ROS_ENV} && ros2 run rqt_image_view rqt_image_view /camera/image_raw"
 TELEOP_CMD="${ROS_ENV} && ros2 run simulation_worlds keyboard_teleop.py"
 
