@@ -8,7 +8,10 @@
             ├── left_wheel_link
             ├── right_wheel_link
             ├── caster_link（万向支撑轮）
-            └── laser_link（阶段 3.4 激光雷达）
+            ├── laser_link（阶段 3.4 激光雷达）
+            └── camera_mount_link（阶段 3.5 相机支架，仅 visual）
+                  └── camera_link
+                        └── camera_optical_frame
 
   单位：米（SI）
 -->
@@ -48,6 +51,19 @@
   <xacro:property name="laser_scan_min_range" value="0.30"/>
   <!-- 光心再抬高 3cm（在圆柱顶面之上），进一步远离车身碰撞体 -->
   <xacro:property name="laser_scan_z_offset" value="0.03"/>
+
+  <xacro:property name="camera_width" value="0.04"/>
+  <xacro:property name="camera_height" value="0.03"/>
+  <xacro:property name="camera_depth" value="0.03"/>
+  <xacro:property name="camera_mass" value="0.05"/>
+  <!-- 支架锚点（车顶靠后）+ 相机相对支架偏移 → 光心仍在 x=0.22 z=0.13 -->
+  <xacro:property name="camera_mount_x" value="0.17"/>
+  <xacro:property name="camera_mount_z" value="0.09"/>
+  <xacro:property name="camera_rel_x" value="0.05"/>
+  <xacro:property name="camera_rel_z" value="0.04"/>
+  <!-- 支架细杆尺寸（仅 visual，无 collision） -->
+  <xacro:property name="mount_pillar_h" value="0.04"/>
+  <xacro:property name="mount_arm_len" value="0.05"/>
 
   <!-- base_link 中心离地高度 = 轮半径 + 底盘半高 -->
   <xacro:property name="base_z" value="${wheel_radius + base_height / 2.0}"/>
@@ -254,6 +270,65 @@
     <parent link="base_link"/>
     <child link="laser_link"/>
     <origin xyz="${laser_offset_x} 0 ${laser_offset_z}" rpy="0 0 0"/>
+  </joint>
+
+  <!-- ========== 相机支架 + 相机（阶段 3.5）========== -->
+  <!-- 支架仅 visual：不挡 LiDAR /scan，也不进相机 collision -->
+  <link name="camera_mount_link">
+    <!-- 立柱：锚点 z=0.09 向下接到车顶 z=0.05 -->
+    <visual name="mount_pillar">
+      <origin xyz="0 0 ${-mount_pillar_h / 2.0}" rpy="0 0 0"/>
+      <geometry>
+        <box size="0.012 0.012 ${mount_pillar_h}"/>
+      </geometry>
+      <material name="mount_gray">
+        <color rgba="0.35 0.35 0.38 1.0"/>
+      </material>
+    </visual>
+    <!-- 前探横臂：从立柱顶 toward camera（略上仰，在相机后方不进 FOV） -->
+    <visual name="mount_arm">
+      <origin xyz="${mount_arm_len / 2.0} 0 ${camera_rel_z / 2.0}" rpy="0 0 0"/>
+      <geometry>
+        <box size="${mount_arm_len} 0.010 0.010"/>
+      </geometry>
+      <material name="mount_gray_arm">
+        <color rgba="0.35 0.35 0.38 1.0"/>
+      </material>
+    </visual>
+  </link>
+
+  <joint name="camera_mount_joint" type="fixed">
+    <parent link="base_link"/>
+    <child link="camera_mount_link"/>
+    <origin xyz="${camera_mount_x} 0 ${camera_mount_z}" rpy="0 0 0"/>
+  </joint>
+
+  <link name="camera_link">
+    <visual>
+      <origin xyz="${camera_depth / 2.0} 0 0" rpy="0 0 0"/>
+      <geometry>
+        <box size="${camera_depth} ${camera_width} ${camera_height}"/>
+      </geometry>
+      <material name="camera_black">
+        <color rgba="0.02 0.02 0.02 1.0"/>
+      </material>
+    </visual>
+    <xacro:box_inertial mass="${camera_mass}" x="${camera_depth}" y="${camera_width}" z="${camera_height}"/>
+  </link>
+
+  <joint name="camera_joint" type="fixed">
+    <parent link="camera_mount_link"/>
+    <child link="camera_link"/>
+    <origin xyz="${camera_rel_x} 0 ${camera_rel_z}" rpy="0 0 0"/>
+  </joint>
+
+  <!-- ROS 光学系：Z 前、X 右、Y 下（阶段 5 YOLO/投影用；3.5 图像 frame_id 仍用 camera_link） -->
+  <link name="camera_optical_frame"/>
+
+  <joint name="camera_optical_joint" type="fixed">
+    <parent link="camera_link"/>
+    <child link="camera_optical_frame"/>
+    <origin xyz="0 0 0" rpy="${-pi/2} 0 ${-pi/2}"/>
   </joint>
 
   <!-- Gazebo 物理参数（阶段 3.2+） -->

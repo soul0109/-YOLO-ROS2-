@@ -34,6 +34,7 @@ class CmdVelTimeout(Node):
     def __init__(self) -> None:
         super().__init__('cmd_vel_timeout')
 
+        # use_sim_time 勿注入本节点：跟仿真时钟走时，Gazebo 未 publish /clock 前定时器不触发 → spawn 自溜
         # use_sim_time 由 launch 注入，勿在此 declare（会 ParameterAlreadyDeclaredException 崩溃）
         self.declare_parameter('timeout_sec', 0.5)
         self.declare_parameter('input_topic', 'cmd_vel')
@@ -50,6 +51,8 @@ class CmdVelTimeout(Node):
         self._has_cmd = False
 
         self._pub = self.create_publisher(Twist, output_topic, CMD_VEL_OUT_QOS)
+        # 启动立刻发零速度，防止 Gazebo 时钟未跑时 diff_drive 收不到刹车（spawn 自溜）
+        self._pub.publish(Twist())
         # 输入用 system_default，兼容 ros2 topic pub / 键盘 / Nav2
         self.create_subscription(Twist, input_topic, self._on_cmd_vel, qos_profile_system_default)
         self.create_timer(1.0 / rate_hz, self._on_timer)

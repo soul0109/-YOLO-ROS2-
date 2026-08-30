@@ -66,7 +66,7 @@ def generate_launch_description() -> LaunchDescription:
         name='cmd_vel_timeout',
         output='screen',
         parameters=[
-            {'use_sim_time': use_sim_time},
+            {'use_sim_time': False},
             {'timeout_sec': 0.5},
             {'input_topic': 'cmd_vel'},
             {'output_topic': 'cmd_vel_gazebo'},

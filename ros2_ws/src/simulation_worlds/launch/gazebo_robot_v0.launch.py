@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-阶段 3.2+3.3+3.4：Gazebo spawn robot_v0 + 差速驱动 + 激光 /scan。
+阶段 3.2+3.3+3.4+3.5：Gazebo spawn robot_v0 + 差速驱动 + 激光 /scan + 相机。
 
 启动内容：
   1. Gazebo（默认 empty.world；可改 world:=lidar_test.world）
@@ -10,6 +10,7 @@
      - joint_state_publisher → /joint_states
      - diff_drive → /cmd_vel_gazebo、/odom、odom→base_footprint TF
      - ray 激光 → /scan（frame_id=laser_link）
+     - camera → /camera/image_raw（frame_id=camera_link）
   5. cmd_vel_timeout 节点：/cmd_vel → /cmd_vel_gazebo，超时自动刹车
 """
 
@@ -82,7 +83,8 @@ def generate_launch_description() -> LaunchDescription:
         name='cmd_vel_timeout',
         output='screen',
         parameters=[
-            {'use_sim_time': use_sim_time},
+            # 必须用系统时钟，否则 /clock 未就绪前无法发零速度刹车（spawn 自溜）
+            {'use_sim_time': False},
             {'timeout_sec': 0.5},
             {'input_topic': 'cmd_vel'},
             {'output_topic': 'cmd_vel_gazebo'},

@@ -4,6 +4,7 @@
   3.2：材质 / 摩擦 / 接触
   3.3：差速驱动插件 + 关节状态发布（替代 joint_state_publisher 节点）
   3.4：ray 激光 → /scan（sensor_msgs/LaserScan）
+  3.5：camera → /camera/image_raw（sensor_msgs/Image）
 -->
 <robot xmlns:xacro="http://www.ros.org/wiki/xacro">
 
@@ -93,6 +94,44 @@
         <output_type>sensor_msgs/LaserScan</output_type>
         <!-- TF / 消息 header.frame_id -->
         <frame_name>laser_link</frame_name>
+      </plugin>
+    </sensor>
+  </gazebo>
+
+  <gazebo reference="camera_mount_link">
+    <material>Gazebo/Grey</material>
+  </gazebo>
+
+  <gazebo reference="camera_link">
+    <material>Gazebo/Black</material>
+    <!--
+      Gazebo 光轴默认 -Z；pitch +90° → 朝 base +X。
+      pose 必须写在 <camera> 之前；joint 禁止写 rpy（合并后 visual/sensor 会分裂）。
+    -->
+    <sensor name="camera" type="camera">
+      <pose>0 0 0 0 1.57079632679 0</pose>
+      <always_on>true</always_on>
+      <update_rate>10</update_rate>
+      <visualize>true</visualize>
+      <camera>
+        <horizontal_fov>1.047</horizontal_fov>
+        <image>
+          <width>640</width>
+          <height>480</height>
+          <format>R8G8B8</format>
+        </image>
+        <clip>
+          <near>0.05</near>
+          <far>50.0</far>
+        </clip>
+      </camera>
+      <plugin name="gazebo_ros_camera" filename="libgazebo_ros_camera.so">
+        <ros>
+          <remapping>~/image_raw:=camera/image_raw</remapping>
+          <remapping>~/camera_info:=camera/camera_info</remapping>
+        </ros>
+        <!-- 阶段 3.5 验收 frame_id；阶段 5 可改 camera_optical_frame -->
+        <frame_name>camera_link</frame_name>
       </plugin>
     </sensor>
   </gazebo>

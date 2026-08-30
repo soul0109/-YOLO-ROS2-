@@ -82,5 +82,21 @@ fi
 echo ">>> [4/4] 启动键盘遥控（请保持本终端焦点，用 W/A/S/D，不要用鼠标点 Gazebo）"
 echo ""
 
-# 键盘节点不要用 use_sim_time（否则定时器跟仿真时钟走，会卡）
-exec ros2 run simulation_worlds keyboard_teleop.py
+TELEOP_ENV="source /opt/ros/humble/setup.bash && source ${WS}/install/setup.bash"
+TELEOP_CMD="${TELEOP_ENV} && ros2 run simulation_worlds keyboard_teleop.py"
+
+if ! python3 -c "import evdev" 2>/dev/null; then
+  echo "提示: 未安装 python3-evdev → 将用 TTY 点按模式（W 点一下走，再点停）。"
+  echo "      安装: sudo apt install python3-evdev && sudo usermod -aG input \$USER  # 后重登"
+  echo ""
+  exec bash -lc "$TELEOP_CMD"
+fi
+
+if groups | grep -qw input; then
+  exec bash -lc "$TELEOP_CMD"
+fi
+
+echo "提示: 当前用户不在 input 组，用 sg input 读取真实按键（组合键 W+A 松 A 后 W 仍有效）。"
+echo "      永久修复: sudo usermod -aG input \$USER  然后注销重登"
+echo ""
+exec sg input -c "$TELEOP_CMD"
