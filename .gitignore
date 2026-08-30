@@ -43,6 +43,7 @@ models/datasets/
 !models/README.md
 
 # Runtime artifacts
+bags/
 *.bag
 *.db3
 *.mcap

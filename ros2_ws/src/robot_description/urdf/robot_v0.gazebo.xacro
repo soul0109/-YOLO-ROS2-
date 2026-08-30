@@ -179,4 +179,16 @@
     </plugin>
   </gazebo>
 
+  <!-- 阶段 4 / T3：Gazebo 物理真值 → /ground_truth（与 /odom 对比漂移） -->
+  <gazebo>
+    <plugin name="ground_truth" filename="libgazebo_ros_p3d.so">
+      <ros>
+        <remapping>odom:=ground_truth</remapping>
+      </ros>
+      <body_name>base_footprint</body_name>
+      <update_rate>20</update_rate>
+      <gaussian_noise>0.0</gaussian_noise>
+    </plugin>
+  </gazebo>
+
 </robot>
