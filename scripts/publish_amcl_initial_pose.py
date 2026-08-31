@@ -10,30 +10,16 @@
 from __future__ import annotations
 
 import argparse
-import math
 import sys
 import time
 from pathlib import Path
 
 import rclpy
-import yaml
 from geometry_msgs.msg import PoseWithCovarianceStamped
+from rclpy.parameter import Parameter
 from rclpy.qos import qos_profile_system_default
 
-
-def load_map_origin(map_yaml: Path) -> tuple[float, float, float]:
-    data = yaml.safe_load(map_yaml.read_text(encoding='utf-8'))
-    origin = data.get('origin', [0.0, 0.0, 0.0])
-    return float(origin[0]), float(origin[1]), float(origin[2])
-
-
-def world_to_map_xy(world_x: float, world_y: float, origin_x: float, origin_y: float) -> tuple[float, float]:
-    """ROS map 元数据：world = origin + map_xy。"""
-    return world_x - origin_x, world_y - origin_y
-
-
-def yaw_to_quat(yaw: float) -> tuple[float, float, float, float]:
-    return 0.0, 0.0, math.sin(yaw / 2.0), math.cos(yaw / 2.0)
+from coords import load_map_origin, world_to_map_xy, yaw_to_quat
 
 
 def main() -> int:
@@ -60,14 +46,34 @@ def main() -> int:
     qx, qy, qz, qw = yaw_to_quat(args.yaw - oyaw)
 
     rclpy.init()
-    node = rclpy.create_node('publish_amcl_initial_pose')
+    node = rclpy.create_node(
+        'publish_amcl_initial_pose',
+        parameter_overrides=[Parameter('use_sim_time', Parameter.Type.BOOL, True)],
+    )
     pub = node.create_publisher(PoseWithCovarianceStamped, '/initialpose', qos_profile_system_default)
+
+    # 等仿真时钟
+    clock_end = time.time() + 20.0
+    while time.time() < clock_end and node.get_clock().now().nanoseconds == 0:
+        rclpy.spin_once(node, timeout_sec=0.1)
+
+    if node.get_clock().now().nanoseconds == 0:
+        print('警告: /clock 未就绪，仍用 stamp=0 发布', file=sys.stderr)
+
+    # 等 AMCL 订阅匹配（DDS discovery）
+    match_end = time.time() + 20.0
+    while time.time() < match_end and pub.get_subscription_count() < 1:
+        rclpy.spin_once(node, timeout_sec=0.1)
+    if pub.get_subscription_count() < 1:
+        print('错误: /initialpose 无订阅者（AMCL 未就绪）', file=sys.stderr)
+        node.destroy_node()
+        rclpy.shutdown()
+        return 1
 
     if args.delay > 0:
         time.sleep(args.delay)
 
     msg = PoseWithCovarianceStamped()
-    msg.header.stamp = node.get_clock().now().to_msg()
     msg.header.frame_id = 'map'
     msg.pose.pose.position.x = mx
     msg.pose.pose.position.y = my
@@ -75,19 +81,19 @@ def main() -> int:
     msg.pose.pose.orientation.y = qy
     msg.pose.pose.orientation.z = qz
     msg.pose.pose.orientation.w = qw
-    # x, y, yaw 方差
     msg.pose.covariance[0] = 0.25
     msg.pose.covariance[7] = 0.25
     msg.pose.covariance[35] = 0.06853891909122467
 
-    for _ in range(3):
+    for _ in range(5):
         msg.header.stamp = node.get_clock().now().to_msg()
         pub.publish(msg)
         rclpy.spin_once(node, timeout_sec=0.2)
 
     print(
         f'OK: /initialpose  map=({mx:.3f}, {my:.3f}, yaw={args.yaw:.2f})  '
-        f'world=({args.world_x}, {args.world_y})  origin=({ox}, {oy})'
+        f'world=({args.world_x}, {args.world_y})  origin=({ox}, {oy})  '
+        f'subs={pub.get_subscription_count()}'
     )
     node.destroy_node()
     rclpy.shutdown()

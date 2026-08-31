@@ -21,7 +21,6 @@ import time
 from pathlib import Path
 
 import rclpy
-import yaml
 from geometry_msgs.msg import PoseWithCovarianceStamped
 from nav_msgs.msg import Odometry
 from rclpy.qos import (
@@ -32,11 +31,7 @@ from rclpy.qos import (
     qos_profile_sensor_data,
 )
 
-
-def load_map_origin(map_yaml: Path) -> tuple[float, float, float]:
-    data = yaml.safe_load(map_yaml.read_text(encoding='utf-8'))
-    origin = data.get('origin', [0.0, 0.0, 0.0])
-    return float(origin[0]), float(origin[1]), float(origin[2])
+from coords import load_map_origin
 
 
 def yaw_from_quat(x, y, z, w) -> float:
