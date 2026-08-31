@@ -1,0 +1,93 @@
+Panels:
+  - Class: rviz_common/Displays
+    Name: Displays
+  - Class: rviz_common/Views
+    Name: Views
+Visualization Manager:
+  Class: ""
+  Displays:
+    - Class: rviz_default_plugins/Grid
+      Name: Grid
+      Enabled: true
+      Plane: XY
+      Plane Cell Count: 40
+      Cell Size: 0.5
+      Color: 160; 160; 160
+    - Class: rviz_default_plugins/Map
+      Name: Map
+      Enabled: true
+      Topic:
+        Value: /map
+      Alpha: 0.7
+      Color Scheme: map
+      Draw Behind: true
+    - Class: nav2_rviz_plugins/ParticleCloud
+      Name: Amcl Particle Swarm
+      Enabled: true
+      Topic:
+        Value: /particle_cloud
+      Max Arrow Length: 0.3
+      Min Arrow Length: 0.02
+      Arrow Style: Flat
+    - Class: rviz_default_plugins/TF
+      Name: TF
+      Enabled: true
+      Show Arrows: true
+      Show Axes: true
+      Show Names: false
+      Frame Timeout: 15
+      Marker Scale: 0.2
+    - Class: rviz_default_plugins/RobotModel
+      Name: RobotModel
+      Enabled: true
+      Description Topic:
+        Value: /robot_description
+      Visual Enabled: true
+      Collision Enabled: false
+    - Alpha: 1
+      Autocompute Intensity Bounds: true
+      Class: rviz_default_plugins/LaserScan
+      Color: 255; 0; 0
+      Color Transformer: FlatColor
+      Decay Time: 0
+      Enabled: true
+      Max Range: 8
+      Min Range: 0.3
+      Name: LaserScan
+      Size (m): 0.02
+      Style: Flat Squares
+      Topic:
+        Value: /scan
+      Use Fixed Frame: true
+    - Class: rviz_default_plugins/PoseWithCovariance
+      Name: Amcl Pose
+      Enabled: true
+      Topic:
+        Value: /amcl_pose
+      Color: 0; 255; 0
+      Head Length: 0.15
+      Head Radius: 0.08
+      Shaft Length: 0.2
+      Shaft Radius: 0.04
+  Global Options:
+    Background Color: 48; 48; 48
+    Fixed Frame: map
+    Frame Rate: 30
+  Tools:
+    - Class: rviz_default_plugins/Interact
+    - Class: rviz_default_plugins/MoveCamera
+    - Class: rviz_default_plugins/Select
+    - Class: rviz_default_plugins/SetInitialPose
+      Topic:
+        Value: /initialpose
+  Value: true
+  Views:
+    Current:
+      Class: rviz_default_plugins/TopDownOrtho
+      Name: Current View
+      Scale: 35
+      X: 5
+      Y: 3
+Window Geometry:
+  Height: 800
+  Width: 1200
