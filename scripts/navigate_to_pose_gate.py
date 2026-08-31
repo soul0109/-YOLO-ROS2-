@@ -111,7 +111,8 @@ class NavigateToPoseGate(Node):
         self.amcl: PoseWithCovarianceStamped | None = None
         self.goal_handle = None
         self.stopped_sampling = False
-        self.odom_twist_samples: list[tuple[float, float]] = []
+        self.odom_twist_samples: list[tuple[float, float, float]] = []  # (t_sec, v, w)
+        self._stopped_window_start = None
         self._stopped_timer = None
         self.done = False
         self.exit_code = 1
@@ -122,6 +123,12 @@ class NavigateToPoseGate(Node):
         self.amcl_gt_diag = float('nan')
         self.stopped_pass = False
         self.recoveries = 0
+        self.stopped_max_v = 0.0
+        self.stopped_max_w = 0.0
+        self.stopped_time_to_ok_ms: float | None = None
+        self.stopped_violations: list[tuple[float, float, float]] = []
+        self.stopped_settle_sec: float | None = None
+        self.stopped_re_violation = False
 
         # 等 /clock，避免 timer/stamp 卡在 0
         clock_deadline = self.get_clock().now() + rclpy.duration.Duration(seconds=20.0)
@@ -145,11 +152,12 @@ class NavigateToPoseGate(Node):
         self.amcl = msg
 
     def _on_odom(self, msg: Odometry) -> None:
-        if not self.stopped_sampling:
+        if not self.stopped_sampling or self._stopped_window_start is None:
             return
+        t_sec = (self.get_clock().now() - self._stopped_window_start).nanoseconds / 1e9
         v = msg.twist.twist.linear.x
         w = msg.twist.twist.angular.z
-        self.odom_twist_samples.append((v, w))
+        self.odom_twist_samples.append((t_sec, v, w))
 
     def start_navigation(self) -> None:
         if not self._action_client.wait_for_server(timeout_sec=15.0):
@@ -198,7 +206,48 @@ class NavigateToPoseGate(Node):
         self._capture_goal_errors()
         self.stopped_sampling = True
         self.odom_twist_samples = []
+        self._stopped_window_start = self.get_clock().now()
         self._stopped_timer = self.create_timer(self.STOPPED_WINDOW_SEC, self._finish_stopped_check)
+
+    def _analyze_stopped_window(self) -> None:
+        """停稳判定对齐规格 §5：到位后 1.0 s 内沉降，沉降后无再次超标。"""
+        self.stopped_max_v = 0.0
+        self.stopped_max_w = 0.0
+        self.stopped_time_to_ok_ms = None
+        self.stopped_violations = []
+        self.stopped_settle_sec: float | None = None
+        self.stopped_re_violation = False
+
+        if not self.odom_twist_samples:
+            self.stopped_pass = False
+            return
+
+        for t_sec, v, w in self.odom_twist_samples:
+            self.stopped_max_v = max(self.stopped_max_v, abs(v))
+            self.stopped_max_w = max(self.stopped_max_w, abs(w))
+            if abs(v) >= self.vel_gate or abs(w) >= self.omega_gate:
+                self.stopped_violations.append((t_sec, v, w))
+
+        settle_sec: float | None = None
+        for t_sec, v, w in self.odom_twist_samples:
+            if abs(v) < self.vel_gate and abs(w) < self.omega_gate:
+                settle_sec = t_sec
+                self.stopped_time_to_ok_ms = t_sec * 1000.0
+                break
+
+        self.stopped_settle_sec = settle_sec
+        if settle_sec is None:
+            self.stopped_pass = False
+            return
+
+        self.stopped_re_violation = any(
+            t_sec > settle_sec
+            and (abs(v) >= self.vel_gate or abs(w) >= self.omega_gate)
+            for t_sec, v, w in self.odom_twist_samples
+        )
+        self.stopped_pass = (
+            settle_sec <= self.STOPPED_WINDOW_SEC and not self.stopped_re_violation
+        )
 
     def _capture_goal_errors(self) -> None:
         if self.gt is None:
@@ -231,13 +280,7 @@ class NavigateToPoseGate(Node):
             self._stopped_timer.cancel()
             self._stopped_timer = None
         self.stopped_sampling = False
-        if not self.odom_twist_samples:
-            self.stopped_pass = False
-        else:
-            self.stopped_pass = all(
-                abs(v) < self.vel_gate and abs(w) < self.omega_gate
-                for v, w in self.odom_twist_samples
-            )
+        self._analyze_stopped_window()
         self._print_report()
         self.done = True
 
@@ -271,7 +314,33 @@ class NavigateToPoseGate(Node):
         print(f'Goal (x, y, yaw): ({self.world_x}, {self.world_y}, {self.world_yaw})')
         print(f'Position Error: {self.pos_err:.3f} m  {"PASS" if pos_pass else "FAIL"}')
         print(f'Yaw Error:      {self.yaw_err_deg:.1f} deg  {"PASS" if yaw_pass else "FAIL"}')
-        print(f'Stopped 1s:     {"PASS" if self.stopped_pass else "FAIL"}')
+        if self.stopped_settle_sec is not None:
+            settle_label = f'Stopped (settle {self.stopped_settle_sec:.2f} s)'
+        else:
+            settle_label = 'Stopped (settle n/a)'
+        print(f'{settle_label}: {"PASS" if self.stopped_pass else "FAIL"}')
+        n = len(self.odom_twist_samples)
+        print(
+            f'[stopped] samples={n}  max|v|={self.stopped_max_v:.4f} m/s  '
+            f'max|ω|={self.stopped_max_w:.4f} rad/s'
+        )
+        if self.stopped_time_to_ok_ms is not None:
+            print(f'[stopped] time_to_ok={self.stopped_time_to_ok_ms:.0f} ms (from window start)')
+        elif n > 0:
+            print('[stopped] time_to_ok=n/a (never within threshold in window)')
+        if self.stopped_re_violation:
+            print('[stopped] re-violation after settle: YES')
+        if not self.stopped_pass and self.stopped_violations:
+            print('[stopped] pre-settle violations (up to 5):')
+            limit = self.stopped_settle_sec if self.stopped_settle_sec is not None else float('inf')
+            pre = [(t, v, w) for t, v, w in self.stopped_violations if t <= limit]
+            post = [(t, v, w) for t, v, w in self.stopped_violations if t > limit]
+            for t_sec, v, w in pre[:5]:
+                print(f'  t={t_sec * 1000:.0f} ms  v={v:+.4f} m/s  ω={w:+.4f} rad/s')
+            if post:
+                print('[stopped] post-settle violations (up to 5):')
+                for t_sec, v, w in post[:5]:
+                    print(f'  t={t_sec * 1000:.0f} ms  v={v:+.4f} m/s  ω={w:+.4f} rad/s')
         if math.isnan(self.amcl_gt_diag):
             print('[diag] AMCL vs GT at goal: n/a')
         else:
