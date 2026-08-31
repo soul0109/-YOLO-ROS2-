@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
-"""4.5b：三航点单圈 NavigateToPose（A→C→B，无人工干预）。
+"""4.5b：三航点单圈 NavigateToPose（A→B→C，无人工干预）。
 
-顺序：规格写 A→B→C；实测连续 A→B 易拖垮 AMCL。A→C→B 与 3.1 单点路径一致。
-航点间自动沉降 + 清 costmap + 同点 1 次重试（仍无人工干预）。
+顺序对齐《巡检场景规格》充电→A→B→C。航点间 2 s dwell + clear costmap + 同点 1 次重试。
 
 前置：nav2_test_room.launch + publish_amcl_initial_pose 已跑通。
 
@@ -26,11 +25,11 @@ from rclpy.action import ActionClient
 from rclpy.node import Node
 from rclpy.parameter import Parameter
 
-# 冻结 world 航点（docs/阶段4.5-Nav2说明.md §4.4）；顺序 A→C→B
+# 冻结 world 航点（docs/阶段4.5-Nav2说明.md §4.4）；顺序 A→B→C（规格）
 WAYPOINTS = (
     ('A', 3.15, 1.75, -math.pi / 2.0),
-    ('C', 5.25, 4.25, math.pi / 2.0),
     ('B', 8.45, 1.75, -math.pi / 2.0),
+    ('C', 5.25, 4.25, math.pi / 2.0),
 )
 
 GOAL_TIMEOUT_SEC = 300.0
@@ -102,7 +101,7 @@ class PatrolMissionNode(Node):
             rclpy.spin_once(self, timeout_sec=0.1)
 
         self.get_logger().info(
-            f'Patrol A→C→B ready ({len(self._goals)} goals, map={map_yaml})'
+            f'Patrol A→B→C ready ({len(self._goals)} goals, map={map_yaml})'
         )
         self.create_timer(0.5, self._kickoff_once)
 
@@ -125,7 +124,7 @@ class PatrolMissionNode(Node):
 
     def _prepare_and_send(self) -> None:
         if self._idx >= len(self._goals):
-            print('PATROL: FINAL PASS (A→C→B)')
+            print('PATROL: FINAL PASS (A→B→C)')
             self._exit_code = 0
             self._done = True
             return
