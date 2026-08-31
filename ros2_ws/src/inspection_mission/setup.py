@@ -18,8 +18,7 @@ setup(
     license='Apache-2.0',
     entry_points={
         'console_scripts': [
-            # 'patrol_mission_node = inspection_mission.patrol_mission_node:main',
-            # 'anomaly_manager_node = inspection_mission.anomaly_manager_node:main',
+            'patrol_mission_node = inspection_mission.patrol_mission_node:main',
         ],
     },
 )

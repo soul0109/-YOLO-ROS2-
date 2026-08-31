@@ -13,7 +13,11 @@
   <depend>std_msgs</depend>
   <depend>geometry_msgs</depend>
   <depend>nav2_msgs</depend>
+  <depend>action_msgs</depend>
+  <depend>ament_index_python</depend>
   <depend>inspection_interfaces</depend>
+  <exec_depend>navigation_config</exec_depend>
+  <exec_depend>python3-yaml</exec_depend>
 
   <export>
     <build_type>ament_python</build_type>
