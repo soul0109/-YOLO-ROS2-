@@ -1,7 +1,7 @@
 # 协作方式（VM 直开，2026-08-28 起）
 
 > **主开发环境：** VMware Ubuntu 22.04，`~/inspection-robot`  
-> **同步到宿主机：** Git 优先；push 失败则 **VM → 共享文件夹**
+> **同步到宿主机：** **Git 唯一主路径**（`git push` / `git pull`）
 
 ## 日常流程
 
@@ -11,13 +11,12 @@ bash scripts/run_gazebo_teleop.sh --build    # 仿真 + 方向键
 bash scripts/smoke_test_stage33.sh           # 自测刹车链（无需按键）
 ```
 
-## 同步到宿主机（三选一）
+## 同步到宿主机
 
 | 方式 | 何时用 | VM 命令 | 宿主机 |
 |------|--------|---------|--------|
-| **A GitHub** | 网络通 | `bash scripts/git_sync_push.sh "feat: xxx"` | `git pull origin main` |
-| **B 共享文件夹** | push 成功/失败 | 同上（成功**也** `sync_to_share`；失败另生成 bundle） | 直接打开共享目录里的项目 |
-| **C bundle 离线包** | 没挂共享 | push 失败时生成 `~/inspection-robot-vm.bundle` | `git pull <bundle路径> main` |
+| **A GitHub（推荐）** | 网络通 | `bash scripts/git_sync_push.sh "feat: xxx"` | `git pull origin main` |
+| **B bundle 离线包** | push 失败 | 同上（失败时生成 `~/inspection-robot-vm.bundle`） | `git pull <bundle路径> main` |
 
 **一键（推荐）：**
 
@@ -25,12 +24,14 @@ bash scripts/smoke_test_stage33.sh           # 自测刹车链（无需按键）
 bash ~/inspection-robot/scripts/git_sync_push.sh "feat: 描述本次改动"
 ```
 
-- push **成功** → 宿主机 `git pull`；若已挂载 VMware 共享，脚本会**顺带** `sync_to_share`
-- push **失败** → 自动把 VM 代码镜像到共享文件夹 + 生成 bundle
+- push **成功** → 宿主机 `git pull origin main`
+- push **失败** → VM 生成 `~/inspection-robot-vm.bundle`，宿主机用 bundle 拉取后再 push
+
+**宿主机 → VM（偶发，如宿主机写了文档）：** 宿主机 `git push` 后，VM `git pull`；或从 VMware 共享盘 **只复制指定文件**（勿整仓 rsync `--delete`）。
 
 ## 每次推进：收工同步（固定习惯）
 
-VM 是唯一主环境。每完成一个小任务（改代码 / 改 world / 勾阶段），按下面做，宿主机和共享目录才能跟上。
+VM 是唯一主环境。每完成一个小任务（改代码 / 改 world / 勾阶段），按下面做：
 
 ```text
 改代码 → VM 验收 → 更新 docs/当前进度.md（+ 对应阶段说明）→ git_sync_push.sh "msg"
@@ -43,33 +44,16 @@ VM 是唯一主环境。每完成一个小任务（改代码 / 改 world / 勾�
 | 任务顺序 / 验收闸门 | `docs/后续开发计划与建模攻关方案.md` |
 | 新增阶段说明 | `docs/README.md` 索引加一行 |
 
-**VM 一条命令（commit + push + 刷共享）：**
-
-```bash
-bash ~/inspection-robot/scripts/git_sync_push.sh "feat: 简短描述"
-```
-
 **宿主机接住：**
 
 ```bash
 git pull origin main
-# 若 Cursor 开的是 VMware 共享文件夹而非 git clone，pull 后仍看不到时：
-# 在 VM 再执行 bash scripts/sync_to_share.sh
 ```
-
-**仅刷共享文件夹（已 commit、不 push）：**
-
-```bash
-bash ~/inspection-robot/scripts/sync_to_share.sh
-```
-
-共享目录（脚本自动探测）：`/mnt/a_xm/基于YOLO+ROS2的智能巡检机器人仿真系统` 或 `/mnt/hgfs/a_xm/...`
-
-**勿用：** ~~`sync_from_share.sh`~~（单向 VM → 宿主机，反向会删 VM 新文件）
 
 ## 已删除 / 勿用
 
 - ~~`sync_from_share.sh`~~ **已删除**（曾用 `--delete` 把 VM 新文件删掉）
+- ~~`sync_to_share.sh`~~ **已删除**（整仓 rsync 镜像，易误删；统一走 Git）
 
 ## GitHub push 失败排查
 
@@ -96,7 +80,7 @@ ssh -T -p 443 git@ssh.github.com   # 443 通常可用
 | 方案 | 操作 |
 |------|------|
 | **A SSH 走 443（推荐）** | 在 VM `~/.ssh/config` 写入下方片段，再 `git push` |
-| **B 宿主机推** | VM `bash scripts/git_sync_push.sh "msg"` → push 失败会自动 `sync_to_share` → 宿主机 `git pull` 或打开共享目录 push |
+| **B 宿主机推** | VM commit 后 push 失败 → 用 bundle 或宿主机在 clone 里 pull/commit/push |
 | **C 关代理 / 改 DNS** | 宿主机 Clash 给 `github.com` 加 `DIRECT` 或 fake-ip-filter；或 VM DNS 改 8.8.8.8（TUN 模式下可能仍被劫持） |
 
 `~/.ssh/config` 片段：

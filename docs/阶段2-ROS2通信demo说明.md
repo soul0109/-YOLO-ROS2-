@@ -135,7 +135,7 @@ inspection_demos/
 
 ```bash
 bash ~/inspection-robot/scripts/git_sync_push.sh "feat: stage2 demo"
-# push 失败会自动 sync_to_share 到共享文件夹
+# push 失败会生成 bundle 离线包，见 docs/协作方式-VM直开.md
 ```
 
 ### 5.2 编译
