@@ -17,9 +17,22 @@ from pathlib import Path
 import rclpy
 from geometry_msgs.msg import PoseWithCovarianceStamped
 from rclpy.parameter import Parameter
-from rclpy.qos import qos_profile_system_default
+from rclpy.qos import (
+    DurabilityPolicy,
+    HistoryPolicy,
+    QoSProfile,
+    ReliabilityPolicy,
+)
 
 from coords import load_map_origin, world_to_map_xy, yaw_to_quat
+
+# nav2_amcl /initialpose 订阅：BEST_EFFORT + VOLATILE（与 system_default RELIABLE 不匹配）
+_INITIALPOSE_QOS = QoSProfile(
+    reliability=ReliabilityPolicy.BEST_EFFORT,
+    durability=DurabilityPolicy.VOLATILE,
+    history=HistoryPolicy.KEEP_LAST,
+    depth=10,
+)
 
 
 def main() -> int:
@@ -50,7 +63,7 @@ def main() -> int:
         'publish_amcl_initial_pose',
         parameter_overrides=[Parameter('use_sim_time', Parameter.Type.BOOL, True)],
     )
-    pub = node.create_publisher(PoseWithCovarianceStamped, '/initialpose', qos_profile_system_default)
+    pub = node.create_publisher(PoseWithCovarianceStamped, '/initialpose', _INITIALPOSE_QOS)
 
     # 等仿真时钟
     clock_end = time.time() + 20.0

@@ -2,6 +2,9 @@
 """
 4.5a：NavigateToPose 三指标验收（到位 / 航向 / 停稳 1s）。
 
+诊断：分别在 action result 瞬间与停稳窗口结束后采样 GT/AMCL，
+闸门仍用停稳后误差（0.20 m / 10°），同时打印 result_time 对照。
+
 用法（nav2_test_room + initialpose 已运行）：
   python3 scripts/navigate_to_pose_gate.py --world-x 2.0 --world-y 3.0 --yaw 0
 """
@@ -11,12 +14,14 @@ from __future__ import annotations
 import argparse
 import math
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 
 import rclpy
 from action_msgs.msg import GoalStatus
 from geometry_msgs.msg import PoseStamped, PoseWithCovarianceStamped
 from nav2_msgs.action import NavigateToPose
+from nav2_msgs.msg import ParticleCloud
 from nav_msgs.msg import Odometry
 from rclpy.action import ActionClient
 from rclpy.node import Node
@@ -70,6 +75,22 @@ def status_label(status: int) -> str:
     return labels.get(status, str(status))
 
 
+@dataclass
+class PoseSnapshot:
+    """某一时刻的 GT/AMCL 对照快照。"""
+    label: str
+    gt_pos_err: float = float('inf')
+    gt_yaw_err_deg: float = float('inf')
+    amcl_vs_gt_xy: float = float('nan')
+    amcl_vs_gt_yaw_deg: float = float('nan')
+    cov0: float = float('nan')
+    cov7: float = float('nan')
+    cov35: float = float('nan')
+    particle_n: int = 0
+    particle_spread_xy: float = float('nan')  # 加权 xy RMS
+    notes: str = ''
+
+
 class NavigateToPoseGate(Node):
     STOPPED_WINDOW_SEC = 1.0
 
@@ -109,6 +130,7 @@ class NavigateToPoseGate(Node):
 
         self.gt: Odometry | None = None
         self.amcl: PoseWithCovarianceStamped | None = None
+        self.particle_cloud: ParticleCloud | None = None
         self.goal_handle = None
         self.stopped_sampling = False
         self.odom_twist_samples: list[tuple[float, float, float]] = []  # (t_sec, v, w)
@@ -118,6 +140,9 @@ class NavigateToPoseGate(Node):
         self.exit_code = 1
         self.fail_reason = ''
 
+        self.snap_result = PoseSnapshot('result_time')
+        self.snap_settled = PoseSnapshot('settled_time')
+        # 闸门用停稳后快照
         self.pos_err = float('inf')
         self.yaw_err_deg = float('inf')
         self.amcl_gt_diag = float('nan')
@@ -143,6 +168,9 @@ class NavigateToPoseGate(Node):
         self.create_subscription(
             PoseWithCovarianceStamped, '/amcl_pose', self._on_amcl, AMCL_POSE_QOS,
         )
+        self.create_subscription(
+            ParticleCloud, '/particle_cloud', self._on_particles, qos_profile_sensor_data,
+        )
         self._timeout_timer = self.create_timer(timeout_sec, self._on_timeout)
 
     def _on_gt(self, msg: Odometry) -> None:
@@ -150,6 +178,9 @@ class NavigateToPoseGate(Node):
 
     def _on_amcl(self, msg: PoseWithCovarianceStamped) -> None:
         self.amcl = msg
+
+    def _on_particles(self, msg: ParticleCloud) -> None:
+        self.particle_cloud = msg
 
     def _on_odom(self, msg: Odometry) -> None:
         if not self.stopped_sampling or self._stopped_window_start is None:
@@ -203,7 +234,8 @@ class NavigateToPoseGate(Node):
             self._fail(f'NavigateToPose {status_label(status)}')
             return
 
-        self._capture_goal_errors()
+        # result_time：Nav2 宣布 SUCCEEDED / Reached 的瞬间（对照用，不单独作最终闸）
+        self.snap_result = self._capture_snapshot('result_time')
         self.stopped_sampling = True
         self.odom_twist_samples = []
         self._stopped_window_start = self.get_clock().now()
@@ -249,29 +281,59 @@ class NavigateToPoseGate(Node):
             settle_sec <= self.STOPPED_WINDOW_SEC and not self.stopped_re_violation
         )
 
-    def _capture_goal_errors(self) -> None:
+    def _particle_spread_xy(self) -> tuple[int, float]:
+        cloud = self.particle_cloud
+        if cloud is None or not cloud.particles:
+            return 0, float('nan')
+        parts = cloud.particles
+        wsum = sum(max(p.weight, 0.0) for p in parts)
+        if wsum <= 0.0:
+            wsum = float(len(parts))
+            weights = [1.0] * len(parts)
+        else:
+            weights = [max(p.weight, 0.0) for p in parts]
+        mx = sum(w * p.pose.position.x for w, p in zip(weights, parts)) / wsum
+        my = sum(w * p.pose.position.y for w, p in zip(weights, parts)) / wsum
+        var = sum(
+            w * ((p.pose.position.x - mx) ** 2 + (p.pose.position.y - my) ** 2)
+            for w, p in zip(weights, parts)
+        ) / wsum
+        return len(parts), math.sqrt(var)
+
+    def _capture_snapshot(self, label: str) -> PoseSnapshot:
+        snap = PoseSnapshot(label=label)
+        n, spread = self._particle_spread_xy()
+        snap.particle_n = n
+        snap.particle_spread_xy = spread
+
         if self.gt is None:
-            self.pos_err = float('inf')
-            self.yaw_err_deg = float('inf')
-            self.amcl_gt_diag = float('nan')
-            return
+            snap.notes = 'no_gt'
+            return snap
 
         gt_x = self.gt.pose.pose.position.x
         gt_y = self.gt.pose.pose.position.y
         gq = self.gt.pose.pose.orientation
         gt_yaw = yaw_from_quat(gq.x, gq.y, gq.z, gq.w)
+        snap.gt_pos_err = math.hypot(gt_x - self.world_x, gt_y - self.world_y)
+        snap.gt_yaw_err_deg = abs(math.degrees(normalize_angle(gt_yaw - self.world_yaw)))
 
-        self.pos_err = math.hypot(gt_x - self.world_x, gt_y - self.world_y)
-        self.yaw_err_deg = abs(math.degrees(normalize_angle(gt_yaw - self.world_yaw)))
+        if self.amcl is None:
+            snap.notes = 'no_amcl'
+            return snap
 
-        if self.amcl is not None:
-            ax = self.amcl.pose.pose.position.x
-            ay = self.amcl.pose.pose.position.y
-            gt_map_x = gt_x - self.origin_x
-            gt_map_y = gt_y - self.origin_y
-            self.amcl_gt_diag = math.hypot(ax - gt_map_x, ay - gt_map_y)
-        else:
-            self.amcl_gt_diag = float('nan')
+        ax = self.amcl.pose.pose.position.x
+        ay = self.amcl.pose.pose.position.y
+        aq = self.amcl.pose.pose.orientation
+        amcl_yaw = yaw_from_quat(aq.x, aq.y, aq.z, aq.w)
+        gt_map_x = gt_x - self.origin_x
+        gt_map_y = gt_y - self.origin_y
+        snap.amcl_vs_gt_xy = math.hypot(ax - gt_map_x, ay - gt_map_y)
+        snap.amcl_vs_gt_yaw_deg = abs(math.degrees(normalize_angle(amcl_yaw - gt_yaw)))
+        cov = self.amcl.pose.covariance
+        snap.cov0 = float(cov[0])
+        snap.cov7 = float(cov[7])
+        snap.cov35 = float(cov[35])
+        return snap
 
     def _finish_stopped_check(self) -> None:
         if self.done:
@@ -281,6 +343,11 @@ class NavigateToPoseGate(Node):
             self._stopped_timer = None
         self.stopped_sampling = False
         self._analyze_stopped_window()
+        # settled_time：停稳窗口结束后重新采样（最终闸门依据）
+        self.snap_settled = self._capture_snapshot('settled_time')
+        self.pos_err = self.snap_settled.gt_pos_err
+        self.yaw_err_deg = self.snap_settled.gt_yaw_err_deg
+        self.amcl_gt_diag = self.snap_settled.amcl_vs_gt_xy
         self._print_report()
         self.done = True
 
@@ -306,14 +373,45 @@ class NavigateToPoseGate(Node):
         print(f'FAIL: {reason}')
         print('FINAL: FAIL')
 
+    def _fmt_snap(self, snap: PoseSnapshot) -> None:
+        def fnum(v: float, fmt: str) -> str:
+            return fmt.format(v) if math.isfinite(v) else 'n/a'
+
+        print(f'[snap:{snap.label}] GT pos_err={fnum(snap.gt_pos_err, "{:.3f}")} m  '
+              f'yaw_err={fnum(snap.gt_yaw_err_deg, "{:.1f}")} deg')
+        print(
+            f'[snap:{snap.label}] AMCL vs GT xy={fnum(snap.amcl_vs_gt_xy, "{:.3f}")} m  '
+            f'yaw={fnum(snap.amcl_vs_gt_yaw_deg, "{:.1f}")} deg'
+        )
+        print(
+            f'[snap:{snap.label}] cov[0]={fnum(snap.cov0, "{:.3f}")} '
+            f'cov[7]={fnum(snap.cov7, "{:.3f}")} cov[35]={fnum(snap.cov35, "{:.3f}")}'
+        )
+        print(
+            f'[snap:{snap.label}] particle_n={snap.particle_n} '
+            f'spread_xy={fnum(snap.particle_spread_xy, "{:.3f}")} m'
+            + (f' notes={snap.notes}' if snap.notes else '')
+        )
+
     def _print_report(self) -> None:
+        # 最终闸门：停稳后 GT（阈值不变 0.20 m / 10°）
         pos_pass = self.pos_err <= self.pos_gate
         yaw_pass = self.yaw_err_deg <= self.yaw_gate_deg
         final_pass = pos_pass and yaw_pass and self.stopped_pass
 
         print(f'Goal (x, y, yaw): ({self.world_x}, {self.world_y}, {self.world_yaw})')
-        print(f'Position Error: {self.pos_err:.3f} m  {"PASS" if pos_pass else "FAIL"}')
-        print(f'Yaw Error:      {self.yaw_err_deg:.1f} deg  {"PASS" if yaw_pass else "FAIL"}')
+        print('--- sampling (result_time = Nav2 SUCCEEDED 瞬间; settled_time = 停稳窗结束后) ---')
+        self._fmt_snap(self.snap_result)
+        self._fmt_snap(self.snap_settled)
+        print('--- gate uses settled_time ---')
+        print(
+            f'Position Error (settled): {self.pos_err:.3f} m  '
+            f'{"PASS" if pos_pass else "FAIL"} (gate {self.pos_gate:.2f} m)'
+        )
+        print(
+            f'Yaw Error (settled):      {self.yaw_err_deg:.1f} deg  '
+            f'{"PASS" if yaw_pass else "FAIL"} (gate {self.yaw_gate_deg:.0f}°)'
+        )
         if self.stopped_settle_sec is not None:
             settle_label = f'Stopped (settle {self.stopped_settle_sec:.2f} s)'
         else:
@@ -341,12 +439,30 @@ class NavigateToPoseGate(Node):
                 print('[stopped] post-settle violations (up to 5):')
                 for t_sec, v, w in post[:5]:
                     print(f'  t={t_sec * 1000:.0f} ms  v={v:+.4f} m/s  ω={w:+.4f} rad/s')
-        if math.isnan(self.amcl_gt_diag):
-            print('[diag] AMCL vs GT at goal: n/a')
-        else:
-            print(f'[diag] AMCL vs GT at goal: {self.amcl_gt_diag:.3f} m')
         if self.recoveries:
             print(f'[diag] recoveries during nav: {self.recoveries}')
+        # 粗分类提示（人工确认）
+        r, s = self.snap_result, self.snap_settled
+        if (
+            math.isfinite(s.gt_pos_err) and s.gt_pos_err <= self.pos_gate
+            and math.isfinite(s.gt_yaw_err_deg) and s.gt_yaw_err_deg <= self.yaw_gate_deg
+        ):
+            hint = 'settled_PASS → 更像 result_time 取样时机问题'
+        elif (
+            math.isfinite(s.amcl_vs_gt_xy) and s.amcl_vs_gt_xy > 0.15
+        ) or (
+            math.isfinite(s.particle_spread_xy) and math.isfinite(r.particle_spread_xy)
+            and s.particle_spread_xy > r.particle_spread_xy * 1.3
+        ):
+            hint = 'AMCL↔GT 大 / particle spread 升 → 优先怀疑 AMCL 漂移'
+        elif (
+            math.isfinite(s.amcl_vs_gt_xy) and s.amcl_vs_gt_xy < 0.10
+            and math.isfinite(s.gt_pos_err) and s.gt_pos_err > self.pos_gate
+        ):
+            hint = 'AMCL≈GT 但 GT 仍超闸 → 局部控制或目标姿态'
+        else:
+            hint = '需对照 bag /cmd_vel /local_plan 再分'
+        print(f'[classify_hint] {hint}')
         print(f'FINAL: {"PASS" if final_pass else "FAIL"}')
         self.exit_code = 0 if final_pass else 1
 

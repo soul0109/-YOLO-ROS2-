@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
-"""4.5b：巡检单圈 NavigateToPose（语义 A→B→C）。
+"""4.5b：巡检单圈（语义 A→B→C）。
 
-WAYPOINT VERSION = BC_SPLIT_V3
-  A → B → B_egress → B_corridor_turn → C_approach → C
-  - A/B/C：巡检点（冻结）
-  - 机动点：房内掉头 / 走廊换向 / C 门前对准（仍用同一 GoalChecker）
+WAYPOINT VERSION = BC_SPLIT_V3_4
+  A → B → B_clear(nav) → B_arc_east(nav) → B_arc_north(nav) → B_corridor_in(nav)
+    → B_corridor_turn_spin(+π/2) → C_approach(nav) → C
+  - navigate：NavigateToPose（world→map 一次）
+  - spin：仅走廊同点换向仍用 /spin（房内已不用纯 +π Spin）
+  - 房内掉头：两段路径切向短弧（各约 90°），替代单点 180° / 纯 Spin
 
-坐标：WAYPOINTS 只存 world；发 NavigateToPose 时做一次 world→map。
 禁止改本文件以外的 Nav2/AMCL/地图（Phase1 边界）。
 
   ros2 run inspection_mission patrol_mission_node
@@ -23,34 +24,45 @@ import rclpy
 import yaml
 from action_msgs.msg import GoalStatus
 from ament_index_python.packages import get_package_share_directory
+from builtin_interfaces.msg import Duration
 from geometry_msgs.msg import PoseStamped, PoseWithCovarianceStamped
-from nav2_msgs.action import NavigateToPose
+from nav2_msgs.action import NavigateToPose, Spin
 from nav2_msgs.srv import ClearEntireCostmap
 from rclpy.action import ActionClient
 from rclpy.node import Node
 from rclpy.parameter import Parameter
 from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
 
-WAYPOINT_VERSION = 'BC_SPLIT_V3'
+WAYPOINT_VERSION = 'BC_SPLIT_V3_4'
 
-# name, world_x, world_y, yaw, kind  — 仅 world，禁止在此预存 map
+# (name, action, x, y, yaw_or_delta, kind)
+#   navigate: x,y,yaw 为 world 绝对位姿
+#   spin:     x,y 忽略；yaw_or_delta = /spin 的相对 target_yaw
 WAYPOINTS = (
-    ('A', 3.15, 1.75, -math.pi / 2.0, 'inspect'),
-    ('B', 8.45, 1.75, -math.pi / 2.0, 'inspect'),
-    # 房内后撤到宽处，朝北（宽处完成 180°）
-    ('B_egress', 8.45, 1.55, math.pi / 2.0, 'maneuver'),
-    # 穿 B 门后走廊中线，朝西
-    ('B_corridor_turn', 8.45, 3.00, math.pi, 'maneuver'),
-    # C 门正南走廊中线，朝北
-    ('C_approach', 5.25, 3.00, math.pi / 2.0, 'maneuver'),
-    ('C', 5.25, 4.25, math.pi / 2.0, 'inspect'),
+    ('A', 'navigate', 3.15, 1.75, -math.pi / 2.0, 'inspect'),
+    ('B', 'navigate', 8.45, 1.75, -math.pi / 2.0, 'inspect'),
+    ('B_clear', 'navigate', 8.45, 1.35, -math.pi / 2.0, 'maneuver'),
+    # 路径切向短弧：东移 +90° → 北移 +90°（替代单点 180° / 纯 Spin）
+    ('B_arc_east', 'navigate', 8.75, 1.35, 0.0, 'maneuver'),
+    ('B_arc_north', 'navigate', 8.75, 1.75, math.pi / 2.0, 'maneuver'),
+    ('B_corridor_in', 'navigate', 8.45, 3.00, math.pi / 2.0, 'maneuver'),
+    # B_corridor_in≈+π/2 → 朝西 π：相对 +π/2（走廊段仍观察）
+    ('B_corridor_turn_spin', 'spin', 0.0, 0.0, math.pi / 2.0, 'maneuver'),
+    ('C_approach', 'navigate', 5.25, 3.00, math.pi / 2.0, 'maneuver'),
+    ('C', 'navigate', 5.25, 4.25, math.pi / 2.0, 'inspect'),
 )
 
 GOAL_TIMEOUT_SEC = 300.0
+SPIN_TIMEOUT_SEC = 60.0
+SPIN_ACCEPT_TIMEOUT_SEC = 10.0
+SPIN_ACCEPT_RETRY_SLEEP_SEC = 1.0
+SPIN_POST_SUCCESS_SLEEP_SEC = 0.8
+SPIN_MAX_ACCEPT_RETRIES = 1  # 共最多 2 次发送
 INTER_GOAL_DWELL_SEC = 2.0
+BEFORE_SPIN_EXTRA_DWELL_SEC = 1.5  # 进入 spin 段前额外 dwell（走廊第二次等）
 BEFORE_INSPECT_C_DWELL_SEC = 3.5
 RETRY_DWELL_SEC = 2.5
-MAX_ATTEMPTS_PER_WP = 3
+MAX_ATTEMPTS_PER_WP = 3  # 仅 navigate；spin 失败不包装成 NTP
 CLEAR_TIMEOUT_SEC = 3.0
 ENABLE_SOFT_REANCHOR = False
 SOFT_REANCHOR_MAX_XY_VAR = 0.5
@@ -97,14 +109,14 @@ class PatrolMissionNode(Node):
         share = Path(get_package_share_directory('navigation_config'))
         map_yaml = share / 'maps' / 'test_room.yaml'
         self._ox, self._oy, _ = load_map_origin(map_yaml)
-        # 只存 world；map 在 _send_goal 里转换一次
         self._goals = list(WAYPOINTS)
 
         self._idx = 0
         self._attempt = 0
         self._done = False
         self._exit_code = 1
-        self._client = ActionClient(self, NavigateToPose, 'navigate_to_pose')
+        self._nav_client = ActionClient(self, NavigateToPose, 'navigate_to_pose')
+        self._spin_client = ActionClient(self, Spin, 'spin')
         self._clear_global = self.create_client(
             ClearEntireCostmap, '/global_costmap/clear_entirely_global_costmap',
         )
@@ -122,6 +134,7 @@ class PatrolMissionNode(Node):
         self._dwell_timer = None
         self._goal_handle = None
         self._current_name = ''
+        self._current_action = ''
         self._current_kind = ''
         self._recoveries = 0
         self._seg_t0 = 0.0
@@ -135,10 +148,10 @@ class PatrolMissionNode(Node):
             rclpy.spin_once(self, timeout_sec=0.1)
 
         names = ' → '.join(g[0] for g in self._goals)
-        be = next(g for g in self._goals if g[0] == 'B_egress')
         print(f'WAYPOINT VERSION = {WAYPOINT_VERSION}')
         print(
-            f'B_egress=({be[1]:.2f},{be[2]:.2f},{be[3]:.4f}) '
+            'B_arc_east=(8.75,1.35,0)  B_arc_north=(8.75,1.75,+π/2)  '
+            'B_corridor_turn_spin=+π/2  '
             f'origin=({self._ox:.4f},{self._oy:.4f})'
         )
         print(f'PATROL: route {names}')
@@ -251,20 +264,40 @@ class PatrolMissionNode(Node):
         self._clear_costmaps_sync()
         if reanchor:
             self._soft_reanchor()
-        self._send_goal()
+        self._send_segment()
 
-    def _send_goal(self) -> None:
-        if not self._client.wait_for_server(timeout_sec=15.0):
+    def _send_segment(self) -> None:
+        name, action, wx, wy, yaw_or_delta, kind = self._goals[self._idx]
+        self._current_name = name
+        self._current_action = action
+        self._current_kind = kind
+        self._recoveries = 0
+        self._seg_t0 = time.monotonic()
+        self._attempt += 1
+
+        if action == 'spin':
+            self._send_spin(name, yaw_or_delta, kind)
+        elif action == 'navigate':
+            self._send_navigate(name, wx, wy, yaw_or_delta, kind)
+        else:
+            self._fail(f'unknown action={action} for {name}')
+
+    def _send_navigate(
+        self, name: str, wx: float, wy: float, yaw: float, kind: str,
+    ) -> None:
+        if not self._nav_client.wait_for_server(timeout_sec=15.0):
             self._fail('Action server /navigate_to_pose 不可用')
             return
 
-        name, wx, wy, yaw, kind = self._goals[self._idx]
         mx, my = world_to_map_xy(wx, wy, self._ox, self._oy)
         quat = yaw_to_quat(yaw)
-
         print(
-            f'[WAYPOINT] name={name} kind={kind} '
+            f'[WAYPOINT] name={name} action=navigate kind={kind} '
             f'world=({wx:.3f},{wy:.3f}) map=({mx:.3f},{my:.3f}) yaw={yaw:.4f}'
+        )
+        print(
+            f'PATROL: sending {name} navigate '
+            f'attempt={self._attempt}/{MAX_ATTEMPTS_PER_WP}'
         )
 
         goal = NavigateToPose.Goal()
@@ -278,22 +311,105 @@ class PatrolMissionNode(Node):
         goal.pose.pose.orientation.z = quat[2]
         goal.pose.pose.orientation.w = quat[3]
 
-        self._attempt += 1
-        print(
-            f'PATROL: sending {name} attempt={self._attempt}/{MAX_ATTEMPTS_PER_WP}'
-        )
-        self.get_logger().info(f'Sending {name} kind={kind} attempt={self._attempt}')
         if self._timeout_timer is not None:
             self._timeout_timer.cancel()
         self._timeout_timer = self.create_timer(GOAL_TIMEOUT_SEC, self._on_timeout)
-        fut = self._client.send_goal_async(goal, feedback_callback=self._on_feedback)
+        fut = self._nav_client.send_goal_async(goal, feedback_callback=self._on_nav_feedback)
         fut.add_done_callback(self._on_goal_response)
-        self._current_name = name
-        self._current_kind = kind
-        self._recoveries = 0
-        self._seg_t0 = time.monotonic()
 
-    def _on_feedback(self, feedback_msg) -> None:
+    def _recreate_spin_client(self) -> None:
+        try:
+            self._spin_client.destroy()
+        except Exception:  # noqa: BLE001
+            pass
+        self._spin_client = ActionClient(self, Spin, 'spin')
+
+    def _send_spin(self, name: str, delta_yaw: float, kind: str) -> None:
+        """显式 /spin：accept≤10s，超时销毁 client 后只重试 1 次；已 accepted 只等 result。"""
+        print(
+            f'[WAYPOINT] name={name} action=spin kind={kind} '
+            f'target_yaw={delta_yaw:.4f} (relative)'
+        )
+        print(f'PATROL: sending {name} spin (accept-retry; no NavigateToPose fallback)')
+
+        if self._timeout_timer is not None:
+            self._timeout_timer.cancel()
+            self._timeout_timer = None
+
+        handle = None
+        retry_index = 0
+        for attempt in range(SPIN_MAX_ACCEPT_RETRIES + 1):
+            retry_index = attempt
+            if attempt > 0:
+                print(
+                    f'[SPIN_DIAG] name={name} ACCEPT_TIMEOUT → recreate client; '
+                    f'sleep {SPIN_ACCEPT_RETRY_SLEEP_SEC:.0f}s retry_index={attempt}'
+                )
+                self._recreate_spin_client()
+                end = time.monotonic() + SPIN_ACCEPT_RETRY_SLEEP_SEC
+                while time.monotonic() < end and rclpy.ok() and not self._done:
+                    rclpy.spin_once(self, timeout_sec=0.05)
+
+            if not self._spin_client.wait_for_server(timeout_sec=15.0):
+                self._fail(f'{name} Action server /spin 不可用')
+                return
+            print(f'[SPIN_DIAG] name={name} server_ready=1 retry_index={retry_index}')
+
+            goal = Spin.Goal()
+            goal.target_yaw = float(delta_yaw)
+            goal.time_allowance = Duration(sec=int(SPIN_TIMEOUT_SEC), nanosec=0)
+            send_fut = self._spin_client.send_goal_async(goal)
+            print(f'[SPIN_DIAG] name={name} goal_sent=1 retry_index={retry_index}')
+
+            t0 = time.monotonic()
+            while rclpy.ok() and not self._done and (time.monotonic() - t0) < SPIN_ACCEPT_TIMEOUT_SEC:
+                rclpy.spin_once(self, timeout_sec=0.05)
+                if send_fut.done():
+                    break
+            else:
+                print(
+                    f'[SPIN_DIAG] name={name} goal_accept_timeout=1 '
+                    f'retry_index={retry_index}'
+                )
+                if attempt >= SPIN_MAX_ACCEPT_RETRIES:
+                    self._log_segment('ACCEPT_TIMEOUT')
+                    self._print_seg_summary()
+                    self._fail(f'{name} Spin ACCEPT_TIMEOUT after retry')
+                    return
+                continue
+
+            try:
+                handle = send_fut.result()
+            except Exception as exc:  # noqa: BLE001
+                print(f'[SPIN_DIAG] name={name} accept exception={exc}')
+                if attempt >= SPIN_MAX_ACCEPT_RETRIES:
+                    self._fail(f'{name} Spin accept failed: {exc}')
+                    return
+                continue
+
+            if handle is None or not handle.accepted:
+                print(f'[SPIN_DIAG] name={name} goal_accepted=0 retry_index={retry_index}')
+                if attempt >= SPIN_MAX_ACCEPT_RETRIES:
+                    self._fail(f'{name} Spin goal rejected')
+                    return
+                continue
+
+            print(
+                f'[SPIN_DIAG] name={name} goal_accepted=1 retry_index={retry_index} '
+                f'(wait result only; no resend)'
+            )
+            break
+
+        if handle is None:
+            self._fail(f'{name} Spin no accepted goal')
+            return
+
+        self._goal_handle = handle
+        self._timeout_timer = self.create_timer(SPIN_TIMEOUT_SEC + 5.0, self._on_timeout)
+        result_fut = handle.get_result_async()
+        result_fut.add_done_callback(self._on_result)
+
+    def _on_nav_feedback(self, feedback_msg) -> None:
         fb = feedback_msg.feedback
         if hasattr(fb, 'number_of_recoveries'):
             self._recoveries = fb.number_of_recoveries
@@ -310,8 +426,8 @@ class PatrolMissionNode(Node):
         dt = time.monotonic() - self._seg_t0
         line = (
             f'PATROL_SEG: [{self._current_name}] {status} '
-            f'kind={self._current_kind} recoveries={self._recoveries} '
-            f'duration={dt:.1f}s'
+            f'action={self._current_action} kind={self._current_kind} '
+            f'recoveries={self._recoveries} duration={dt:.1f}s'
         )
         print(line)
         self._seg_log.append(line)
@@ -330,8 +446,15 @@ class PatrolMissionNode(Node):
         wrapped = future.result()
         status = wrapped.status
         name = self._current_name
+        action = self._current_action
+
         if status != GoalStatus.STATUS_SUCCEEDED:
             self._log_segment(status_label(status))
+            # spin：失败立即停，不包装成 NavigateToPose 重试
+            if action == 'spin':
+                self._print_seg_summary()
+                self._fail(f'{name} Spin {status_label(status)}')
+                return
             if self._attempt < MAX_ATTEMPTS_PER_WP:
                 print(
                     f'PATROL: {name} {status_label(status)} — '
@@ -349,12 +472,21 @@ class PatrolMissionNode(Node):
             return
 
         self._log_segment('SUCCESS')
-        print(f'PATROL: {name} SUCCEEDED (recoveries={self._recoveries})')
+        print(f'PATROL: {name} SUCCEEDED (action={action} recoveries={self._recoveries})')
+        if action == 'spin':
+            # 收尾等待，避免下一 action 踩未清理状态
+            end = time.monotonic() + SPIN_POST_SUCCESS_SLEEP_SEC
+            while time.monotonic() < end and rclpy.ok() and not self._done:
+                rclpy.spin_once(self, timeout_sec=0.05)
         self._idx += 1
         self._attempt = 0
         dwell = INTER_GOAL_DWELL_SEC
-        if self._idx < len(self._goals) and self._goals[self._idx][0] == 'C':
-            dwell = BEFORE_INSPECT_C_DWELL_SEC
+        if self._idx < len(self._goals):
+            nxt = self._goals[self._idx]
+            if nxt[0] == 'C':
+                dwell = BEFORE_INSPECT_C_DWELL_SEC
+            elif nxt[1] == 'spin':
+                dwell = max(dwell, BEFORE_SPIN_EXTRA_DWELL_SEC)
         if self._dwell_timer is not None:
             self._dwell_timer.cancel()
         self._dwell_timer = self.create_timer(dwell, self._after_dwell)
@@ -382,7 +514,7 @@ class PatrolMissionNode(Node):
         if self._goal_handle is not None:
             self._goal_handle.cancel_goal_async()
         self._print_seg_summary()
-        self._fail(f'{self._current_name} timeout after {GOAL_TIMEOUT_SEC:.0f}s')
+        self._fail(f'{self._current_name} timeout')
 
     def _fail(self, msg: str) -> None:
         print(f'PATROL: FAIL — {msg}')
