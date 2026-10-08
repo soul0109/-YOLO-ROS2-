@@ -8,10 +8,12 @@
 #   分段闸门（split 第三参，默认 arc1 —— 先验东向 90° 弧）：
 #     arc1 ：只到 B_arc_east
 #     arc2 ：到 B_arc_north
+#     door ：到 B_door_align（门前对齐；不接穿门）
 #     full ：完整 B→C 链
 #
 #   bash scripts/patrol_bc_fast.sh 1 split arc1
 #   bash scripts/patrol_bc_fast.sh 1 split arc2
+#   bash scripts/patrol_bc_fast.sh 1 split door
 #   bash scripts/patrol_bc_fast.sh 1 split full
 #   bash scripts/patrol_bc_fast.sh 10 direct
 #
@@ -35,7 +37,7 @@ OUT=""
 for arg in "$@"; do
   case "$arg" in
     direct|split) MODE="$arg" ;;
-    arc1|arc2|full) STAGE="$arg" ;;
+    arc1|arc2|door|full) STAGE="$arg" ;;
     '') ;;
     *)
       if [[ "$arg" =~ ^[0-9]+$ ]]; then
@@ -59,11 +61,14 @@ POST_SEG_LOC_DWELL_SEC=2.0
 # world / spin（与 patrol_mission_node BC_SPLIT_V3_4 一致）
 BX=8.45; BY=1.75; BYAW=-1.57079632679
 BCLX=8.45; BCLY=1.35; BCLYAW=-1.57079632679
-# 路径切向短弧（探针正式候选；mission_node 待 arc2+穿门通过后再同步）
-# B_arc_east=9.05：弃用 8.75（LOC 不合格）；9.05 在门洞右缘外侧，须经 B_arc_north 回收
-# B_arc_north：东→北 + 收回门洞可用范围，再交给 B_corridor_in 穿门
+# 路径切向短弧（探针候选；mission 未同步）
+# 门洞开口 x∈[7.90,9.00]、北墙 y≈2.25 → x=9.05 在洞外，深北会顶墙（v32_18 GT=0.294）
+# north 目标 y=1.90（可达区）；再 door_x 西移进轴线；face 转北；align 贴门内侧 2.10
 BAEX=9.05; BAEY=1.35; BAEYAW=0.0
-BANX=8.75; BANY=1.75; BANYAW=1.57079632679
+BANX=9.05; BANY=1.90; BANYAW=1.57079632679
+BDXX=8.60; BDXY=1.90; BDXYAW=3.14159265359
+BDFX=8.60; BDFY=1.90; BDFYAW=1.57079632679
+BDAX=8.60; BDAY=2.10; BDAYAW=1.57079632679
 BCIX=8.45; BCIY=3.00; BCIYAW=1.57079632679
 SPIN_TURN=1.57079632679; EXPECT_TURN=3.14159265359
 CAX=5.25; CAY=3.00; CAYAW=1.57079632679
@@ -329,7 +334,7 @@ run_spin_gate() {
 
 run_split_chain() {
   # nav / spin 交错；段成功后做 LOC 快照，诊断门禁 FAIL(ec=4) 立即停
-  # STAGE=arc1|arc2|full：先验东向 90° 弧，再北向，再接走廊
+  # STAGE=arc1|arc2|door|full
   local summary="" out ec loc_out
   local steps=()
   case "$STAGE" in
@@ -346,11 +351,23 @@ run_split_chain() {
         "nav|B_arc_north|$BANX|$BANY|$BANYAW"
       )
       ;;
+    door)
+      # door_face 同点换向 ABORT（v32_19）→ 合并进 door_align（带 Δy 的 NTP）
+      steps=(
+        "nav|B_clear|$BCLX|$BCLY|$BCLYAW"
+        "nav|B_arc_east|$BAEX|$BAEY|$BAEYAW"
+        "nav|B_arc_north|$BANX|$BANY|$BANYAW"
+        "nav|B_door_x|$BDXX|$BDXY|$BDXYAW"
+        "nav|B_door_align|$BDAX|$BDAY|$BDAYAW"
+      )
+      ;;
     full)
       steps=(
         "nav|B_clear|$BCLX|$BCLY|$BCLYAW"
         "nav|B_arc_east|$BAEX|$BAEY|$BAEYAW"
         "nav|B_arc_north|$BANX|$BANY|$BANYAW"
+        "nav|B_door_x|$BDXX|$BDXY|$BDXYAW"
+        "nav|B_door_align|$BDAX|$BDAY|$BDAYAW"
         "nav|B_corridor_in|$BCIX|$BCIY|$BCIYAW"
         "dwell|pre_corridor_turn|1.5"
         "spin|B_corridor_turn|$SPIN_TURN|$EXPECT_TURN"
@@ -359,7 +376,7 @@ run_split_chain() {
       )
       ;;
     *)
-      echo "[run] unknown STAGE=$STAGE (want arc1|arc2|full)" | tee -a "$LOG" >&2
+      echo "[run] unknown STAGE=$STAGE (want arc1|arc2|door|full)" | tee -a "$LOG" >&2
       return 2
       ;;
   esac
@@ -429,11 +446,12 @@ fi
     echo "- 每轮: spawn@B + clear + initialpose + AMCL(cov)@B → nav/spin 交错（每段前 clear）"
     echo "- STAGE=${STAGE}"
     case "$STAGE" in
-      arc1) echo "- 链: B_clear → B_arc_east(${BAEX},${BAEY},${BAEYAW})  [probe 候选；mission 未同步]" ;;
-      arc2) echo "- 链: B_clear → B_arc_east(${BAEX},${BAEY},0) → B_arc_north(${BANX},${BANY},+π/2)  [穿门前回收；mission 未同步]" ;;
-      full) echo "- 链: B_clear → B_arc_east → B_arc_north → B_corridor_in → B_corridor_turn_spin → C_approach → C" ;;
+      arc1) echo "- 链: B_clear → B_arc_east(${BAEX},${BAEY},${BAEYAW})" ;;
+      arc2) echo "- 链: B_clear → B_arc_east → B_arc_north(${BANX},${BANY},+π/2)" ;;
+      door) echo "- 链: … → north(${BANX},${BANY}) → door_x(${BDXX},${BDXY},π) → door_align(${BDAX},${BDAY},+π/2)  [无同点换向；不接穿门]" ;;
+      full) echo "- 链: … → door_x → door_align → B_corridor_in → …" ;;
     esac
-    echo "- 房内不用纯 Spin；走廊 turn 仍 /spin（仅 full）；段后 dwell ${POST_SEG_LOC_DWELL_SEC}s + LOC 截断；门禁不放宽"
+    echo "- 房内/门前不用纯 Spin；走廊 turn 仍 /spin（仅 full）；段后 dwell ${POST_SEG_LOC_DWELL_SEC}s + LOC 截断；门禁不放宽"
   else
     echo "- 每轮: spawn@B + clear + initialpose + AMCL(cov)@B → clear → NavigateToPose(C)"
   fi
