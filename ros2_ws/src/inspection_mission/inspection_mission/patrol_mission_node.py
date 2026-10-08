@@ -1,15 +1,13 @@
 #!/usr/bin/env python3
-"""4.5b：巡检单圈 NavigateToPose（语义 A→B→C，无人工干预）。
+"""4.5b：巡检单圈 NavigateToPose（语义 A→B→C）。
 
-Phase 1（2026-10-08）：仅拆 B→C 机动，A→B 保持直达。
-  A → B → B_egress → C_approach → C
-  - A/B/C：巡检点（规格闸门语义）
-  - B_egress / C_approach：机动点（导航实现细节；本版仍走同一 GoalChecker）
+WAYPOINT VERSION = BC_SPLIT_V3
+  A → B → B_egress → B_corridor_turn → C_approach → C
+  - A/B/C：巡检点（冻结）
+  - 机动点：房内掉头 / 走廊换向 / C 门前对准（仍用同一 GoalChecker）
 
-航点间 dwell + 同步清 costmap；失败同点最多 3 次。
-soft reanchor 默认关闭（ABORT 后禁止）。
-
-前置：nav2_test_room.launch + publish_amcl_initial_pose 已跑通。
+坐标：WAYPOINTS 只存 world；发 NavigateToPose 时做一次 world→map。
+禁止改本文件以外的 Nav2/AMCL/地图（Phase1 边界）。
 
   ros2 run inspection_mission patrol_mission_node
 """
@@ -33,23 +31,23 @@ from rclpy.node import Node
 from rclpy.parameter import Parameter
 from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
 
-# kind: inspect = 业务巡检点；maneuver = 进出门/掉头机动（Phase1 仍用同一 Nav2 GoalChecker）
-# world 坐标冻结自 docs/阶段4.5-Nav2说明.md §4.4 + Phase1 机动点
+WAYPOINT_VERSION = 'BC_SPLIT_V3'
+
+# name, world_x, world_y, yaw, kind  — 仅 world，禁止在此预存 map
 WAYPOINTS = (
-    # name, wx, wy, yaw, kind
     ('A', 3.15, 1.75, -math.pi / 2.0, 'inspect'),
     ('B', 8.45, 1.75, -math.pi / 2.0, 'inspect'),
-    # 出 B 门后走廊点：面向西朝 C（勿紧贴柜前原地 180°——会超时/蹭墙）
-    # 门在 y≈2.25；2.55 在走廊侧，给差速车留出弧线出室空间
-    ('B_egress', 8.45, 2.55, math.pi, 'maneuver'),
-    # 走廊对准 C 门，准备北向进房
+    # 房内后撤到宽处，朝北（宽处完成 180°）
+    ('B_egress', 8.45, 1.55, math.pi / 2.0, 'maneuver'),
+    # 穿 B 门后走廊中线，朝西
+    ('B_corridor_turn', 8.45, 3.00, math.pi, 'maneuver'),
+    # C 门正南走廊中线，朝北
     ('C_approach', 5.25, 3.00, math.pi / 2.0, 'maneuver'),
     ('C', 5.25, 4.25, math.pi / 2.0, 'inspect'),
 )
 
 GOAL_TIMEOUT_SEC = 300.0
 INTER_GOAL_DWELL_SEC = 2.0
-# 进入最终巡检点 C 前略多等
 BEFORE_INSPECT_C_DWELL_SEC = 3.5
 RETRY_DWELL_SEC = 2.5
 MAX_ATTEMPTS_PER_WP = 3
@@ -98,15 +96,9 @@ class PatrolMissionNode(Node):
 
         share = Path(get_package_share_directory('navigation_config'))
         map_yaml = share / 'maps' / 'test_room.yaml'
-        ox, oy, _ = load_map_origin(map_yaml)
-
-        # (name, mx, my, quat, kind)
-        self._goals: list[
-            tuple[str, float, float, tuple[float, float, float, float], str]
-        ] = []
-        for name, wx, wy, yaw, kind in WAYPOINTS:
-            mx, my = world_to_map_xy(wx, wy, ox, oy)
-            self._goals.append((name, mx, my, yaw_to_quat(yaw), kind))
+        self._ox, self._oy, _ = load_map_origin(map_yaml)
+        # 只存 world；map 在 _send_goal 里转换一次
+        self._goals = list(WAYPOINTS)
 
         self._idx = 0
         self._attempt = 0
@@ -143,10 +135,16 @@ class PatrolMissionNode(Node):
             rclpy.spin_once(self, timeout_sec=0.1)
 
         names = ' → '.join(g[0] for g in self._goals)
-        self.get_logger().info(
-            f'Patrol ready ({len(self._goals)} goals: {names}, map={map_yaml})'
+        be = next(g for g in self._goals if g[0] == 'B_egress')
+        print(f'WAYPOINT VERSION = {WAYPOINT_VERSION}')
+        print(
+            f'B_egress=({be[1]:.2f},{be[2]:.2f},{be[3]:.4f}) '
+            f'origin=({self._ox:.4f},{self._oy:.4f})'
         )
         print(f'PATROL: route {names}')
+        self.get_logger().info(
+            f'{WAYPOINT_VERSION} ready ({len(self._goals)} goals, map={map_yaml})'
+        )
         self.create_timer(0.5, self._kickoff_once)
 
     def _on_amcl(self, msg: PoseWithCovarianceStamped) -> None:
@@ -159,7 +157,6 @@ class PatrolMissionNode(Node):
         self._prepare_and_send(reanchor=False)
 
     def _clear_costmaps_sync(self) -> None:
-        """等清图完成再发 goal（异步 fire-and-forget 是时序坑）。"""
         req = ClearEntireCostmap.Request()
         futures: list[tuple[str, object]] = []
         for name, client in (
@@ -192,7 +189,6 @@ class PatrolMissionNode(Node):
             )
 
     def _soft_reanchor(self) -> None:
-        """用当前 AMCL 估计重发 /initialpose（默认关闭；禁止在 ABORT 后调用）。"""
         if not ENABLE_SOFT_REANCHOR:
             return
         if self._amcl is None:
@@ -240,7 +236,6 @@ class PatrolMissionNode(Node):
         msg.pose.covariance = cov
         self._initialpose_pub.publish(msg)
         print('PATROL: soft reanchor from /amcl_pose')
-        self.get_logger().info('Soft reanchor published to /initialpose')
         end = time.monotonic() + 0.8
         while time.monotonic() < end and rclpy.ok():
             rclpy.spin_once(self, timeout_sec=0.05)
@@ -248,7 +243,7 @@ class PatrolMissionNode(Node):
     def _prepare_and_send(self, reanchor: bool = False) -> None:
         if self._idx >= len(self._goals):
             self._print_seg_summary()
-            print('PATROL: FINAL PASS (A→B→C via maneuver split)')
+            print(f'PATROL: FINAL PASS ({WAYPOINT_VERSION})')
             self._exit_code = 0
             self._done = True
             return
@@ -263,7 +258,15 @@ class PatrolMissionNode(Node):
             self._fail('Action server /navigate_to_pose 不可用')
             return
 
-        name, mx, my, quat, kind = self._goals[self._idx]
+        name, wx, wy, yaw, kind = self._goals[self._idx]
+        mx, my = world_to_map_xy(wx, wy, self._ox, self._oy)
+        quat = yaw_to_quat(yaw)
+
+        print(
+            f'[WAYPOINT] name={name} kind={kind} '
+            f'world=({wx:.3f},{wy:.3f}) map=({mx:.3f},{my:.3f}) yaw={yaw:.4f}'
+        )
+
         goal = NavigateToPose.Goal()
         goal.pose = PoseStamped()
         goal.pose.header.frame_id = 'map'
@@ -277,12 +280,9 @@ class PatrolMissionNode(Node):
 
         self._attempt += 1
         print(
-            f'PATROL: sending goal {name} kind={kind} '
-            f'map=({mx:.3f}, {my:.3f}) attempt={self._attempt}/{MAX_ATTEMPTS_PER_WP}'
+            f'PATROL: sending {name} attempt={self._attempt}/{MAX_ATTEMPTS_PER_WP}'
         )
-        self.get_logger().info(
-            f'Sending waypoint {name} kind={kind} attempt={self._attempt}'
-        )
+        self.get_logger().info(f'Sending {name} kind={kind} attempt={self._attempt}')
         if self._timeout_timer is not None:
             self._timeout_timer.cancel()
         self._timeout_timer = self.create_timer(GOAL_TIMEOUT_SEC, self._on_timeout)

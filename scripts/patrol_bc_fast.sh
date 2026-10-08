@@ -1,17 +1,19 @@
 #!/usr/bin/env bash
-# B→C 快速诊断（Phase1 A/B）：
-#   direct（默认）：spawn@B → hard pose(B) → NavigateToPose(C)
-#   split：         spawn@B → hard pose(B) → B_egress → C_approach → C
+# B→C Phase1 探针（只改任务路径 + 本脚本；不改 Nav2/AMCL yaml）
 #
-# 前置：终端 1 已 launch nav2_test_room
-#   bash scripts/patrol_bc_fast.sh 10
+#   direct：spawn@B → initialpose → AMCL_LOCKED → NavigateToPose(C)
+#   split ：同上 → B_egress → B_corridor_turn → C_approach → C  (BC_SPLIT_V3)
+#
+#   bash scripts/patrol_bc_fast.sh 10 direct
 #   bash scripts/patrol_bc_fast.sh 10 split
-#   bash scripts/patrol_bc_fast.sh 5 direct /tmp/bc_out
 #
-# 注意：改 amcl yaml 后必须重启 launch；改 patrol 后需 colcon build --packages-select inspection_mission
+# 改 patrol 后：
+#   cd ~/inspection-robot/ros2_ws && colcon build --packages-select inspection_mission --symlink-install
+#   source install/setup.bash
 
 set -o pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+WAYPOINT_VERSION=BC_SPLIT_V3
 
 N=5
 MODE=direct
@@ -19,7 +21,7 @@ OUT=""
 for arg in "$@"; do
   case "$arg" in
     direct|split) MODE="$arg" ;;
-    '' ) ;;
+    '') ;;
     *)
       if [[ "$arg" =~ ^[0-9]+$ ]]; then
         N="$arg"
@@ -33,10 +35,10 @@ STAMP="$(date +%Y%m%d_%H%M%S)"
 OUT="${OUT:-$ROOT/bags/patrol_bc_fast_${MODE}_$STAMP}"
 SPAWN_RETRIES=3
 
-# 与 patrol_mission_node Phase1 对齐（world）
+# world 坐标（与 patrol_mission_node BC_SPLIT_V3 一致；gate 脚本内部做一次 world→map）
 BX=8.45; BY=1.75; BYAW=-1.57079632679
-# B_egress：门外走廊（勿用柜前 1.90+朝北——会原地拧 180° 蹭墙）
-BEX=8.45; BEY=2.55; BEYAW=3.14159265359
+BEX=8.45; BEY=1.55; BEYAW=1.57079632679
+BCTX=8.45; BCTY=3.00; BCTYAW=3.14159265359
 CAX=5.25; CAY=3.00; CAYAW=1.57079632679
 CX=5.25; CY=4.25; CYAW=1.57079632679
 
@@ -51,6 +53,7 @@ mkdir -p "$OUT"
 
 RESULTS_MD="$OUT/results.md"
 RESULTS_CSV="$OUT/results.csv"
+MAP_YAML="$ROOT/ros2_ws/src/navigation_config/maps/test_room.yaml"
 
 service_ok() { timeout 5 ros2 service type "$1" >/dev/null 2>&1; }
 
@@ -74,18 +77,27 @@ reset_to_b() {
   return 1
 }
 
-check_amcl_at_b() {
-  # 不仅有限：必须靠近 B（map），否则后续 FAIL 不能怪航点
-  python3 - <<'PY'
-import math, sys
+# 连续多帧新 AMCL 样本锁在 B（world）；未锁 → INFRA，不发 goal
+check_amcl_locked_at_b() {
+  MAP_YAML="$MAP_YAML" python3 - <<'PY'
+import math, sys, time
+from pathlib import Path
+
 import rclpy
+import yaml
 from geometry_msgs.msg import PoseWithCovarianceStamped
+from rclpy.parameter import Parameter
 from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
 
-# world B → map（origin 与 publish_amcl_initial_pose 一致）
-BX, BY = 8.45 - (-0.0134), 1.75 - 0.0519
-MAX_XY_ERR = 0.35
-MAX_YAW_VAR = 0.25
+BX_W, BY_W = 8.45, 1.75
+MAX_DIST = 0.25
+MAX_YAW_VAR = 0.2
+NEED_STREAK = 10
+WAIT_SEC = 20.0
+
+map_yaml = Path(__import__('os').environ['MAP_YAML'])
+origin = yaml.safe_load(map_yaml.read_text(encoding='utf-8')).get('origin', [0, 0, 0])
+ox, oy = float(origin[0]), float(origin[1])
 
 qos = QoSProfile(
     reliability=ReliabilityPolicy.RELIABLE,
@@ -94,42 +106,70 @@ qos = QoSProfile(
     depth=1,
 )
 rclpy.init()
-node = rclpy.create_node('bc_amcl_check')
+node = rclpy.create_node(
+    'bc_amcl_lock_check',
+    parameter_overrides=[Parameter('use_sim_time', Parameter.Type.BOOL, True)],
+)
 box = {'msg': None}
 
 def cb(m):
     box['msg'] = m
 
 node.create_subscription(PoseWithCovarianceStamped, '/amcl_pose', cb, qos)
-import time
+
+# 等 clock
+t_clock = time.time() + 10.0
+while time.time() < t_clock and node.get_clock().now().nanoseconds == 0:
+    rclpy.spin_once(node, timeout_sec=0.05)
+
+last_stamp = None
+streak = 0
 t0 = time.time()
-while time.time() - t0 < 8.0 and box['msg'] is None:
-    rclpy.spin_once(node, timeout_sec=0.1)
-msg = box['msg']
+last_print = None
+while time.time() - t0 < WAIT_SEC:
+    rclpy.spin_once(node, timeout_sec=0.05)
+    msg = box['msg']
+    if msg is None:
+        continue
+    stamp = (msg.header.stamp.sec, msg.header.stamp.nanosec)
+    if stamp == last_stamp:
+        continue
+    last_stamp = stamp
+
+    p = msg.pose.pose.position
+    cov = msg.pose.covariance
+    # amcl 在 map；转到 world 再比 B
+    wx, wy = p.x + ox, p.y + oy
+    dist = math.hypot(wx - BX_W, wy - BY_W)
+    yaw_var = cov[35]
+    finite = all(math.isfinite(v) for v in (wx, wy, yaw_var, cov[0], cov[7]))
+    ok = finite and dist < MAX_DIST and yaw_var < MAX_YAW_VAR
+    streak = streak + 1 if ok else 0
+    line = (
+        f'[AMCL_GATE] target=B amcl_world=({wx:.3f},{wy:.3f}) '
+        f'distance={dist:.3f} var_yaw={yaw_var:.3f} streak={streak}/{NEED_STREAK} locked={ok}'
+    )
+    if line != last_print:
+        print(line)
+        last_print = line
+    if streak >= NEED_STREAK:
+        print('[AMCL_GATE] AMCL_LOCKED')
+        node.destroy_node()
+        rclpy.shutdown()
+        sys.exit(0)
+
 node.destroy_node()
 rclpy.shutdown()
-if msg is None:
-    print('AMCL_CHECK: no /amcl_pose')
-    sys.exit(2)
-p, q = msg.pose.pose.position, msg.pose.pose.orientation
-cov = msg.pose.covariance
-vals = [p.x, p.y, q.x, q.y, q.z, q.w, cov[0], cov[7], cov[35]]
-finite = all(math.isfinite(v) for v in vals)
-qn = math.sqrt(q.x*q.x + q.y*q.y + q.z*q.z + q.w*q.w)
-err = math.hypot(p.x - BX, p.y - BY)
-locked = finite and err <= MAX_XY_ERR and cov[35] <= MAX_YAW_VAR
-print(f'AMCL_CHECK: locked={locked} err_to_B={err:.3f}m xy=({p.x:.3f},{p.y:.3f}) '
-      f'qn={qn:.4f} var_xy=({cov[0]:.3f},{cov[7]:.3f}) var_yaw={cov[35]:.3f}')
-sys.exit(0 if locked else 3)
+print('[AMCL_GATE] INFRA_FAIL — AMCL not locked at B')
+sys.exit(3)
 PY
 }
 
 run_gate() {
-  # name wx wy yaw timeout — 独立 seg 日志再并入 run LOG
   local name="$1" wx="$2" wy="$3" yaw="$4" timeout="${5:-180}"
   local seg_log="$OUT/.seg_${name}.log"
   : > "$seg_log"
-  echo "[seg] $name → ($wx,$wy,yaw=$yaw)" | tee -a "$LOG"
+  echo "[WAYPOINT] name=$name world=($wx,$wy) yaw=$yaw (gate 内一次 world→map)" | tee -a "$LOG"
   set +e
   python3 "$ROOT/scripts/navigate_to_pose_gate.py" \
     --world-x "$wx" --world-y "$wy" --yaw "$yaw" --timeout "$timeout" \
@@ -149,7 +189,35 @@ run_gate() {
   return "$ec"
 }
 
-echo "输出: $OUT  (mode=$MODE ×$N)"
+run_split_chain() {
+  # 任一段非 SUCCEEDED（gate FAIL）立即停
+  local names=(B_egress B_corridor_turn C_approach C)
+  local xs=("$BEX" "$BCTX" "$CAX" "$CX")
+  local ys=("$BEY" "$BCTY" "$CAY" "$CY")
+  local yaws=("$BEYAW" "$BCTYAW" "$CAYAW" "$CYAW")
+  local summary="" i out ec
+  for i in 0 1 2 3; do
+    set +e
+    out=$(run_gate "${names[$i]}" "${xs[$i]}" "${ys[$i]}" "${yaws[$i]}" 180)
+    ec=$?
+    set -u
+    if [[ -n "$summary" ]]; then
+      summary="${summary}; ${out}"
+    else
+      summary="$out"
+    fi
+    if (( ec != 0 )); then
+      echo "[run] STOP after ${names[$i]} FAIL" | tee -a "$LOG"
+      echo "$summary"
+      return 1
+    fi
+  done
+  echo "$summary"
+  return 0
+}
+
+echo "输出: $OUT  (mode=$MODE ×$N)  VERSION=$WAYPOINT_VERSION"
+echo "pkg prefix: $(ros2 pkg prefix inspection_mission 2>/dev/null || echo n/a)"
 if ! ros2 action list 2>/dev/null | grep -q '/navigate_to_pose'; then
   echo "错误: 请先 ros2 launch navigation_config nav2_test_room.launch.py"
   exit 2
@@ -160,17 +228,18 @@ if ! service_ok /spawn_entity; then
 fi
 
 {
-  echo "# B→C 快速诊断 ×${N} (mode=${MODE})"
+  echo "# B→C 快速诊断 ×${N} (mode=${MODE}, ${WAYPOINT_VERSION})"
   echo ""
   echo "- 开始: $(date -Iseconds)"
   echo "- HEAD: $(git -C "$ROOT" rev-parse --short HEAD 2>/dev/null || echo unknown)"
+  echo "- VERSION: ${WAYPOINT_VERSION}"
   if [[ "$MODE" == split ]]; then
-    echo "- 每轮: spawn@B + hard pose(B) + B_egress → C_approach → C"
+    echo "- 每轮: spawn@B + initialpose + AMCL_LOCKED ×10帧 → B_egress→B_corridor_turn→C_approach→C"
+    echo "- B_egress=(8.45,1.55,+π/2) B_corridor_turn=(8.45,3.00,π) C_approach=(5.25,3.00,+π/2)"
   else
-    echo "- 每轮: spawn@B + hard pose(B) + NavigateToPose(C)"
+    echo "- 每轮: spawn@B + initialpose + AMCL_LOCKED ×10帧 → NavigateToPose(C)"
   fi
-  echo "- soft reanchor: 不使用"
-  echo "- AMCL/Smac/Progress/Recovery: 未改（Phase1 只改任务路径）"
+  echo "- Nav2/AMCL/Progress/Recovery: 未改"
   echo ""
   echo "| # | 结果 | exit | 摘要 |"
   echo "|---|---|---|---|"
@@ -179,17 +248,19 @@ echo "run,result,exit,summary" > "$RESULTS_CSV"
 
 pass_n=0
 fail_n=0
+infra_n=0
 
 for i in $(seq 1 "$N"); do
   printf -v tag "%02d" "$i"
   LOG="$OUT/run${tag}.log"
   : > "$LOG"
   echo ""
-  echo "========== B→C RUN $i / $N (mode=$MODE) =========="
+  echo "========== B→C RUN $i / $N (mode=$MODE $WAYPOINT_VERSION) =========="
 
   if ! reset_to_b >>"$LOG" 2>&1; then
     echo "| $i | INFRA | 3 | spawn@B failed |" >> "$RESULTS_MD"
     echo "$i,INFRA,3,spawn_failed" >> "$RESULTS_CSV"
+    ((infra_n++)) || true
     continue
   fi
 
@@ -198,65 +269,44 @@ for i in $(seq 1 "$N"); do
       --world-x "$BX" --world-y "$BY" --yaw "$BYAW" >>"$LOG" 2>&1; then
     echo "| $i | INFRA | 2 | initialpose B failed |" >> "$RESULTS_MD"
     echo "$i,INFRA,2,initialpose_failed" >> "$RESULTS_CSV"
+    ((infra_n++)) || true
     continue
   fi
-  sleep 2
 
-  echo "[run$i] check AMCL locked near B" | tee -a "$LOG"
-  if ! check_amcl_at_b >>"$LOG" 2>&1; then
+  echo "[run$i] AMCL_GATE (need 10 new frames locked at B)" | tee -a "$LOG"
+  if ! check_amcl_locked_at_b >>"$LOG" 2>&1; then
     echo "| $i | INFRA | 4 | amcl not locked at B |" >> "$RESULTS_MD"
     echo "$i,INFRA,4,amcl_not_at_B" >> "$RESULTS_CSV"
-    ((fail_n++)) || true
-    echo "[run$i] SKIP — AMCL 未锁在 B（勿归因航点）；可重试本轮或重启 launch"
+    ((infra_n++)) || true
+    echo "[run$i] INFRA — 不发 NavigateToPose（勿归因航点）"
     continue
   fi
 
   SUMMARY=""
   EC=0
   if [[ "$MODE" == split ]]; then
-    echo "[run$i] split: B_egress → C_approach → C ..." | tee -a "$LOG"
-    # 任一段 FAIL 立即停本轮，避免带着脏定位硬跑后续段
+    echo "[run$i] split V3 chain ..." | tee -a "$LOG"
     set +e
-    out1=$(run_gate B_egress "$BEX" "$BEY" "$BEYAW" 180)
-    e1=$?
+    SUMMARY=$(run_split_chain)
+    EC=$?
     set -u
-    SUMMARY="$out1"
-    if (( e1 != 0 )); then
-      echo "[run$i] STOP after B_egress FAIL (不继续 C_approach/C)" | tee -a "$LOG"
-      RES=FAIL; EC=1; ((fail_n++)) || true
-    else
-      set +e
-      out2=$(run_gate C_approach "$CAX" "$CAY" "$CAYAW" 180)
-      e2=$?
-      set -u
-      SUMMARY="${SUMMARY}; ${out2}"
-      if (( e2 != 0 )); then
-        echo "[run$i] STOP after C_approach FAIL (不继续 C)" | tee -a "$LOG"
-        RES=FAIL; EC=1; ((fail_n++)) || true
-      else
-        set +e
-        out3=$(run_gate C "$CX" "$CY" "$CYAW" 180)
-        e3=$?
-        set -u
-        SUMMARY="${SUMMARY}; ${out3}"
-        if (( e3 == 0 )); then
-          RES=PASS; EC=0; ((pass_n++)) || true
-        else
-          RES=FAIL; EC=1; ((fail_n++)) || true
-        fi
-      fi
-    fi
     echo "$SUMMARY" | tee -a "$LOG"
+    if (( EC == 0 )); then
+      RES=PASS
+      ((pass_n++)) || true
+    else
+      RES=FAIL
+      ((fail_n++)) || true
+    fi
   else
     echo "[run$i] NavigateToPose C ..." | tee -a "$LOG"
     set +e
-    python3 "$ROOT/scripts/navigate_to_pose_gate.py" \
-      --world-x "$CX" --world-y "$CY" --yaw "$CYAW" --timeout 180 >>"$LOG" 2>&1
+    out=$(run_gate C "$CX" "$CY" "$CYAW" 180)
     EC=$?
     set -u
-    SUMMARY=$(grep -E 'FINAL:|recoveries during nav|Position Error|Yaw Error' "$LOG" \
-      | tr '\n' '; ' | sed 's/; $//' | cut -c1-200)
-    if grep -q 'FINAL: PASS' "$LOG"; then
+    SUMMARY="$out"
+    echo "$SUMMARY" | tee -a "$LOG"
+    if (( EC == 0 )); then
       RES=PASS
       ((pass_n++)) || true
     else
@@ -274,15 +324,18 @@ done
   echo ""
   echo "## 统计"
   echo "- 结束: $(date -Iseconds)"
+  echo "- VERSION: **${WAYPOINT_VERSION}**"
   echo "- mode: **${MODE}**"
-  echo "- PASS: **${pass_n}** / ${N}"
+  echo "- PASS: **${pass_n}**"
   echo "- FAIL: **${fail_n}**"
+  echo "- INFRA: **${infra_n}**"
+  echo "- 有效导航轮: PASS+FAIL = $((pass_n + fail_n)) / ${N}"
   echo "- 明细: \`runNN.log\`"
   echo ""
   echo "## 读表"
-  echo "- direct = 基线（单 goal B→C）"
-  echo "- split = Phase1（B_egress → C_approach → C）"
-  echo "- 对比 recoveries：看各 SEG 行 / \`[diag] recoveries during nav\`"
+  echo "- INFRA = spawn/initialpose/AMCL 未锁，**不算航点失败**"
+  echo "- direct = 实验 A（只验证门禁 + 单点 C）"
+  echo "- split = 实验 B（V3 四段机动）"
 } | tee -a "$RESULTS_MD"
 
 echo "完成: $RESULTS_MD"
