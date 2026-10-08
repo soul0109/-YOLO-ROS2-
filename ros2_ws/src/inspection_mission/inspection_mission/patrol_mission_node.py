@@ -39,8 +39,9 @@ WAYPOINTS = (
     # name, wx, wy, yaw, kind
     ('A', 3.15, 1.75, -math.pi / 2.0, 'inspect'),
     ('B', 8.45, 1.75, -math.pi / 2.0, 'inspect'),
-    # 房 B 内开阔处完成掉头，车头朝北对门（不负责精确对柜）
-    ('B_egress', 8.45, 1.90, math.pi / 2.0, 'maneuver'),
+    # 出 B 门后走廊点：面向西朝 C（勿紧贴柜前原地 180°——会超时/蹭墙）
+    # 门在 y≈2.25；2.55 在走廊侧，给差速车留出弧线出室空间
+    ('B_egress', 8.45, 2.55, math.pi, 'maneuver'),
     # 走廊对准 C 门，准备北向进房
     ('C_approach', 5.25, 3.00, math.pi / 2.0, 'maneuver'),
     ('C', 5.25, 4.25, math.pi / 2.0, 'inspect'),

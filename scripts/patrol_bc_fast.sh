@@ -35,7 +35,8 @@ SPAWN_RETRIES=3
 
 # 与 patrol_mission_node Phase1 对齐（world）
 BX=8.45; BY=1.75; BYAW=-1.57079632679
-BEX=8.45; BEY=1.90; BEYAW=1.57079632679
+# B_egress：门外走廊（勿用柜前 1.90+朝北——会原地拧 180° 蹭墙）
+BEX=8.45; BEY=2.55; BEYAW=3.14159265359
 CAX=5.25; CAY=3.00; CAYAW=1.57079632679
 CX=5.25; CY=4.25; CYAW=1.57079632679
 
@@ -206,25 +207,38 @@ for i in $(seq 1 "$N"); do
   EC=0
   if [[ "$MODE" == split ]]; then
     echo "[run$i] split: B_egress → C_approach → C ..." | tee -a "$LOG"
+    # 任一段 FAIL 立即停本轮，避免带着脏定位硬跑后续段
     set +e
-    out1=$(run_gate B_egress "$BEX" "$BEY" "$BEYAW" 120)
+    out1=$(run_gate B_egress "$BEX" "$BEY" "$BEYAW" 180)
     e1=$?
-    out2=$(run_gate C_approach "$CAX" "$CAY" "$CAYAW" 180)
-    e2=$?
-    out3=$(run_gate C "$CX" "$CY" "$CYAW" 180)
-    e3=$?
     set -u
-    SUMMARY="${out1}; ${out2}; ${out3}"
-    echo "$SUMMARY" | tee -a "$LOG"
-    if (( e1 == 0 && e2 == 0 && e3 == 0 )); then
-      RES=PASS
-      EC=0
-      ((pass_n++)) || true
+    SUMMARY="$out1"
+    if (( e1 != 0 )); then
+      echo "[run$i] STOP after B_egress FAIL (不继续 C_approach/C)" | tee -a "$LOG"
+      RES=FAIL; EC=1; ((fail_n++)) || true
     else
-      RES=FAIL
-      EC=1
-      ((fail_n++)) || true
+      set +e
+      out2=$(run_gate C_approach "$CAX" "$CAY" "$CAYAW" 180)
+      e2=$?
+      set -u
+      SUMMARY="${SUMMARY}; ${out2}"
+      if (( e2 != 0 )); then
+        echo "[run$i] STOP after C_approach FAIL (不继续 C)" | tee -a "$LOG"
+        RES=FAIL; EC=1; ((fail_n++)) || true
+      else
+        set +e
+        out3=$(run_gate C "$CX" "$CY" "$CYAW" 180)
+        e3=$?
+        set -u
+        SUMMARY="${SUMMARY}; ${out3}"
+        if (( e3 == 0 )); then
+          RES=PASS; EC=0; ((pass_n++)) || true
+        else
+          RES=FAIL; EC=1; ((fail_n++)) || true
+        fi
+      fi
     fi
+    echo "$SUMMARY" | tee -a "$LOG"
   else
     echo "[run$i] NavigateToPose C ..." | tee -a "$LOG"
     set +e
