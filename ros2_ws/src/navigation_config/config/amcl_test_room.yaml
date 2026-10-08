@@ -16,6 +16,8 @@ amcl:
     pf_err: 0.05
     pf_z: 0.99
     resample_interval: 1
+    # <0：用时间作种子（默认，验收用）；调试 B→C 可重复性时临时改为 42，验收前改回 -1
+    random_seed: -1
 
     # 激光（对齐 robot_v0：min_range 0.30 m，test_room 尺度）
     laser_model_type: likelihood_field

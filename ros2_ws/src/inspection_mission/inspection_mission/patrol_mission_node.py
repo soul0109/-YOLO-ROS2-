@@ -41,8 +41,14 @@ INTER_GOAL_DWELL_SEC = 2.0
 # B→C 是压力测试唯一易挂腿：多等一会儿再发 C
 BEFORE_C_DWELL_SEC = 3.5
 RETRY_DWELL_SEC = 2.5
-MAX_ATTEMPTS_PER_WP = 3  # 首次 + 2 次重试（stress：run10 第 2 次重试能救，run02 需再多一次机会）
+MAX_ATTEMPTS_PER_WP = 3  # 首次 + 2 次重试
 CLEAR_TIMEOUT_SEC = 3.0
+# 2026-10-08：stress run5 在 C ABORT 后 soft reanchor，随后观测到 map→odom TF NaN。
+# 默认关闭；仅成功航点切换且 pose 有限、协方差未爆时才允许（见 _soft_reanchor）。
+ENABLE_SOFT_REANCHOR = False
+# 软锚定协方差上限（超过则跳过，避免把「不确定/坏估计」钉死）
+SOFT_REANCHOR_MAX_XY_VAR = 0.5
+SOFT_REANCHOR_MAX_YAW_VAR = 0.5
 
 _AMCL_QOS = QoSProfile(
     reliability=ReliabilityPolicy.RELIABLE,
@@ -170,28 +176,61 @@ class PatrolMissionNode(Node):
             )
 
     def _soft_reanchor(self) -> None:
-        """用当前 AMCL 估计重发 /initialpose，收紧粒子（站点软重锚定）。"""
+        """用当前 AMCL 估计重发 /initialpose（默认关闭；禁止在 ABORT 后调用）。"""
+        if not ENABLE_SOFT_REANCHOR:
+            return
         if self._amcl is None:
             self.get_logger().warn('soft reanchor skipped: no /amcl_pose yet')
             return
+
+        p = self._amcl.pose.pose.position
+        q = self._amcl.pose.pose.orientation
+        cov = list(self._amcl.pose.covariance)
+        vals = (p.x, p.y, p.z, q.x, q.y, q.z, q.w, cov[0], cov[7], cov[35])
+        if not all(math.isfinite(v) for v in vals):
+            self.get_logger().error('soft reanchor BLOCKED: non-finite amcl_pose')
+            print('PATROL: soft reanchor BLOCKED (non-finite)')
+            return
+
+        qn = math.sqrt(q.x * q.x + q.y * q.y + q.z * q.z + q.w * q.w)
+        if qn < 1e-6 or abs(qn - 1.0) > 0.25:
+            self.get_logger().error(f'soft reanchor BLOCKED: bad quat norm={qn:.4f}')
+            print('PATROL: soft reanchor BLOCKED (quat)')
+            return
+
+        if cov[0] > SOFT_REANCHOR_MAX_XY_VAR or cov[7] > SOFT_REANCHOR_MAX_XY_VAR:
+            self.get_logger().warn(
+                f'soft reanchor skipped: xy var too large ({cov[0]:.3f},{cov[7]:.3f})'
+            )
+            print('PATROL: soft reanchor skipped (cov xy)')
+            return
+        if cov[35] > SOFT_REANCHOR_MAX_YAW_VAR:
+            self.get_logger().warn(
+                f'soft reanchor skipped: yaw var too large ({cov[35]:.3f})'
+            )
+            print('PATROL: soft reanchor skipped (cov yaw)')
+            return
+
         msg = PoseWithCovarianceStamped()
         msg.header.frame_id = 'map'
         msg.header.stamp = self.get_clock().now().to_msg()
-        msg.pose.pose = self._amcl.pose.pose
-        # 略收紧协方差，鼓励抱团，避免走廊二次发散
-        msg.pose.covariance = list(self._amcl.pose.covariance)
-        msg.pose.covariance[0] = min(msg.pose.covariance[0], 0.25)
-        msg.pose.covariance[7] = min(msg.pose.covariance[7], 0.25)
-        msg.pose.covariance[35] = min(msg.pose.covariance[35], 0.15)
+        msg.pose.pose.position.x = p.x
+        msg.pose.pose.position.y = p.y
+        msg.pose.pose.position.z = 0.0
+        # 归一化四元数，不人为压小协方差（避免虚假自信）
+        msg.pose.pose.orientation.x = q.x / qn
+        msg.pose.pose.orientation.y = q.y / qn
+        msg.pose.pose.orientation.z = q.z / qn
+        msg.pose.pose.orientation.w = q.w / qn
+        msg.pose.covariance = cov
         self._initialpose_pub.publish(msg)
         print('PATROL: soft reanchor from /amcl_pose')
         self.get_logger().info('Soft reanchor published to /initialpose')
-        # 给 AMCL 一点消化时间
         end = time.monotonic() + 0.8
         while time.monotonic() < end and rclpy.ok():
             rclpy.spin_once(self, timeout_sec=0.05)
 
-    def _prepare_and_send(self, reanchor: bool = True) -> None:
+    def _prepare_and_send(self, reanchor: bool = False) -> None:
         if self._idx >= len(self._goals):
             print('PATROL: FINAL PASS (A→B→C)')
             self._exit_code = 0
@@ -260,7 +299,7 @@ class PatrolMissionNode(Node):
             if self._attempt < MAX_ATTEMPTS_PER_WP:
                 print(
                     f'PATROL: {name} {status_label(status)} — '
-                    f'retry after clear+reanchor '
+                    f'retry after clear (no soft-reanchor) '
                     f'(attempt {self._attempt}/{MAX_ATTEMPTS_PER_WP})'
                 )
                 if self._dwell_timer is not None:
@@ -289,7 +328,8 @@ class PatrolMissionNode(Node):
             self._dwell_timer = None
         if self._done:
             return
-        self._prepare_and_send(reanchor=True)
+        # ABORT 后禁止 soft reanchor：坏估计写回可能放大成 map→odom NaN
+        self._prepare_and_send(reanchor=False)
 
     def _after_dwell(self) -> None:
         if self._dwell_timer is not None:
@@ -297,7 +337,8 @@ class PatrolMissionNode(Node):
             self._dwell_timer = None
         if self._done:
             return
-        self._prepare_and_send(reanchor=True)
+        # 仅成功切换航点时可选 soft reanchor（默认 ENABLE_SOFT_REANCHOR=False）
+        self._prepare_and_send(reanchor=ENABLE_SOFT_REANCHOR)
 
     def _on_timeout(self) -> None:
         if self._done:
