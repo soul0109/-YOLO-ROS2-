@@ -74,12 +74,18 @@ reset_to_b() {
   return 1
 }
 
-check_amcl_finite() {
+check_amcl_at_b() {
+  # 不仅有限：必须靠近 B（map），否则后续 FAIL 不能怪航点
   python3 - <<'PY'
 import math, sys
 import rclpy
 from geometry_msgs.msg import PoseWithCovarianceStamped
 from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
+
+# world B → map（origin 与 publish_amcl_initial_pose 一致）
+BX, BY = 8.45 - (-0.0134), 1.75 - 0.0519
+MAX_XY_ERR = 0.35
+MAX_YAW_VAR = 0.25
 
 qos = QoSProfile(
     reliability=ReliabilityPolicy.RELIABLE,
@@ -108,11 +114,13 @@ if msg is None:
 p, q = msg.pose.pose.position, msg.pose.pose.orientation
 cov = msg.pose.covariance
 vals = [p.x, p.y, q.x, q.y, q.z, q.w, cov[0], cov[7], cov[35]]
-ok = all(math.isfinite(v) for v in vals)
+finite = all(math.isfinite(v) for v in vals)
 qn = math.sqrt(q.x*q.x + q.y*q.y + q.z*q.z + q.w*q.w)
-print(f'AMCL_CHECK: ok={ok} xy=({p.x:.3f},{p.y:.3f}) qn={qn:.4f} '
-      f'var_xy=({cov[0]:.3f},{cov[7]:.3f}) var_yaw={cov[35]:.3f}')
-sys.exit(0 if ok else 3)
+err = math.hypot(p.x - BX, p.y - BY)
+locked = finite and err <= MAX_XY_ERR and cov[35] <= MAX_YAW_VAR
+print(f'AMCL_CHECK: locked={locked} err_to_B={err:.3f}m xy=({p.x:.3f},{p.y:.3f}) '
+      f'qn={qn:.4f} var_xy=({cov[0]:.3f},{cov[7]:.3f}) var_yaw={cov[35]:.3f}')
+sys.exit(0 if locked else 3)
 PY
 }
 
@@ -194,13 +202,13 @@ for i in $(seq 1 "$N"); do
   fi
   sleep 2
 
-  echo "[run$i] check /amcl_pose finite" | tee -a "$LOG"
-  if ! check_amcl_finite >>"$LOG" 2>&1; then
-    echo "| $i | FAIL | 4 | amcl non-finite or missing |" >> "$RESULTS_MD"
-    echo "$i,FAIL,4,amcl_bad" >> "$RESULTS_CSV"
+  echo "[run$i] check AMCL locked near B" | tee -a "$LOG"
+  if ! check_amcl_at_b >>"$LOG" 2>&1; then
+    echo "| $i | INFRA | 4 | amcl not locked at B |" >> "$RESULTS_MD"
+    echo "$i,INFRA,4,amcl_not_at_B" >> "$RESULTS_CSV"
     ((fail_n++)) || true
-    echo "[run$i] STOP — AMCL 非法，优先查 TF/NaN，勿继续盲跑"
-    break
+    echo "[run$i] SKIP — AMCL 未锁在 B（勿归因航点）；可重试本轮或重启 launch"
+    continue
   fi
 
   SUMMARY=""
