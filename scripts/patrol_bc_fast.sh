@@ -77,7 +77,8 @@ reset_to_b() {
   return 1
 }
 
-# 连续多帧新 AMCL 样本锁在 B（world）；未锁 → INFRA，不发 goal
+# AMCL 静止时因 update_min_d/a 往往不再发新 stamp → 不能「要求 10 个新 stamp」。
+# 正确：等到位姿锁在 B，再连续 ~1s 轮询「最新消息仍合格」（同 stamp 也算）。
 check_amcl_locked_at_b() {
   MAP_YAML="$MAP_YAML" python3 - <<'PY'
 import math, sys, time
@@ -92,8 +93,10 @@ from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPo
 BX_W, BY_W = 8.45, 1.75
 MAX_DIST = 0.25
 MAX_YAW_VAR = 0.2
-NEED_STREAK = 10
-WAIT_SEC = 20.0
+HOLD_SEC = 1.0          # 锁住后保持多久
+POLL_DT = 0.1
+NEED_POLLS = int(HOLD_SEC / POLL_DT)  # 10
+WAIT_SEC = 25.0
 
 map_yaml = Path(__import__('os').environ['MAP_YAML'])
 origin = yaml.safe_load(map_yaml.read_text(encoding='utf-8')).get('origin', [0, 0, 0])
@@ -117,42 +120,55 @@ def cb(m):
 
 node.create_subscription(PoseWithCovarianceStamped, '/amcl_pose', cb, qos)
 
-# 等 clock
 t_clock = time.time() + 10.0
 while time.time() < t_clock and node.get_clock().now().nanoseconds == 0:
     rclpy.spin_once(node, timeout_sec=0.05)
 
-last_stamp = None
-streak = 0
+# 丢弃门禁启动瞬间的旧 latched 消息：等第一个「新 stamp」或超时后再评
+t0 = time.time()
+first = box['msg']
+first_stamp = None
+if first is not None:
+    first_stamp = (first.header.stamp.sec, first.header.stamp.nanosec)
+# 最多等 3s 出现比 latched 更新的 stamp（initialpose 后应有一次）
+while time.time() - t0 < 3.0:
+    rclpy.spin_once(node, timeout_sec=0.05)
+    m = box['msg']
+    if m is None:
+        continue
+    st = (m.header.stamp.sec, m.header.stamp.nanosec)
+    if first_stamp is None or st != first_stamp:
+        break
+
+good_polls = 0
 t0 = time.time()
 last_print = None
+unique_stamps = set()
 while time.time() - t0 < WAIT_SEC:
-    rclpy.spin_once(node, timeout_sec=0.05)
+    rclpy.spin_once(node, timeout_sec=POLL_DT)
     msg = box['msg']
     if msg is None:
+        good_polls = 0
         continue
-    stamp = (msg.header.stamp.sec, msg.header.stamp.nanosec)
-    if stamp == last_stamp:
-        continue
-    last_stamp = stamp
-
+    st = (msg.header.stamp.sec, msg.header.stamp.nanosec)
+    unique_stamps.add(st)
     p = msg.pose.pose.position
     cov = msg.pose.covariance
-    # amcl 在 map；转到 world 再比 B
     wx, wy = p.x + ox, p.y + oy
     dist = math.hypot(wx - BX_W, wy - BY_W)
     yaw_var = cov[35]
     finite = all(math.isfinite(v) for v in (wx, wy, yaw_var, cov[0], cov[7]))
     ok = finite and dist < MAX_DIST and yaw_var < MAX_YAW_VAR
-    streak = streak + 1 if ok else 0
+    good_polls = good_polls + 1 if ok else 0
     line = (
         f'[AMCL_GATE] target=B amcl_world=({wx:.3f},{wy:.3f}) '
-        f'distance={dist:.3f} var_yaw={yaw_var:.3f} streak={streak}/{NEED_STREAK} locked={ok}'
+        f'distance={dist:.3f} var_yaw={yaw_var:.3f} '
+        f'hold={good_polls}/{NEED_POLLS} ok={ok} stamps={len(unique_stamps)}'
     )
     if line != last_print:
         print(line)
         last_print = line
-    if streak >= NEED_STREAK:
+    if good_polls >= NEED_POLLS:
         print('[AMCL_GATE] AMCL_LOCKED')
         node.destroy_node()
         rclpy.shutdown()
@@ -160,7 +176,11 @@ while time.time() - t0 < WAIT_SEC:
 
 node.destroy_node()
 rclpy.shutdown()
-print('[AMCL_GATE] INFRA_FAIL — AMCL not locked at B')
+print(
+    f'[AMCL_GATE] INFRA_FAIL — AMCL not locked at B '
+    f'(unique_stamps={len(unique_stamps)}; '
+    f'stationary AMCL may only publish once after initialpose)'
+)
 sys.exit(3)
 PY
 }
@@ -234,10 +254,10 @@ fi
   echo "- HEAD: $(git -C "$ROOT" rev-parse --short HEAD 2>/dev/null || echo unknown)"
   echo "- VERSION: ${WAYPOINT_VERSION}"
   if [[ "$MODE" == split ]]; then
-    echo "- 每轮: spawn@B + initialpose + AMCL_LOCKED ×10帧 → B_egress→B_corridor_turn→C_approach→C"
+    echo "- 每轮: spawn@B + initialpose + AMCL hold~1s@B → B_egress→B_corridor_turn→C_approach→C"
     echo "- B_egress=(8.45,1.55,+π/2) B_corridor_turn=(8.45,3.00,π) C_approach=(5.25,3.00,+π/2)"
   else
-    echo "- 每轮: spawn@B + initialpose + AMCL_LOCKED ×10帧 → NavigateToPose(C)"
+    echo "- 每轮: spawn@B + initialpose + AMCL hold~1s@B → NavigateToPose(C)"
   fi
   echo "- Nav2/AMCL/Progress/Recovery: 未改"
   echo ""
@@ -273,7 +293,7 @@ for i in $(seq 1 "$N"); do
     continue
   fi
 
-  echo "[run$i] AMCL_GATE (need 10 new frames locked at B)" | tee -a "$LOG"
+  echo "[run$i] AMCL_GATE (hold ~1s locked at B; stamp 可不更新)" | tee -a "$LOG"
   if ! check_amcl_locked_at_b >>"$LOG" 2>&1; then
     echo "| $i | INFRA | 4 | amcl not locked at B |" >> "$RESULTS_MD"
     echo "$i,INFRA,4,amcl_not_at_B" >> "$RESULTS_CSV"
