@@ -12,6 +12,7 @@ import os
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
+from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
@@ -25,6 +26,8 @@ def generate_launch_description() -> LaunchDescription:
     rviz_config = os.path.join(pkg_nav, 'config', 'nav2_test_room.rviz')
 
     use_sim_time = LaunchConfiguration('use_sim_time')
+    rviz = LaunchConfiguration('rviz')
+    gui = LaunchConfiguration('gui')
 
     amcl_stack = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
@@ -33,6 +36,7 @@ def generate_launch_description() -> LaunchDescription:
         launch_arguments={
             'use_sim_time': use_sim_time,
             'rviz': 'false',
+            'gui': gui,
         }.items(),
     )
 
@@ -54,6 +58,7 @@ def generate_launch_description() -> LaunchDescription:
         output='screen',
         arguments=['-d', rviz_config],
         parameters=[{'use_sim_time': use_sim_time}],
+        condition=IfCondition(rviz),
     )
 
     return LaunchDescription([
@@ -61,6 +66,16 @@ def generate_launch_description() -> LaunchDescription:
             'use_sim_time',
             default_value='true',
             description='Gazebo 仿真时钟',
+        ),
+        DeclareLaunchArgument(
+            'rviz',
+            default_value='true',
+            description='是否启动 RViz；无人值守可设 false',
+        ),
+        DeclareLaunchArgument(
+            'gui',
+            default_value='true',
+            description='是否启动 gzclient；无人值守可设 false',
         ),
         amcl_stack,
         navigation,

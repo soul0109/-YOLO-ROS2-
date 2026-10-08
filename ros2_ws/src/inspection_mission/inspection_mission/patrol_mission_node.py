@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """4.5b：三航点单圈 NavigateToPose（A→B→C，无人工干预）。
 
-顺序对齐《巡检场景规格》充电→A→B→C。航点间 2 s dwell + clear costmap + 同点 1 次重试。
+顺序对齐《巡检场景规格》充电→A→B→C。
+航点间 dwell + 同步清 costmap；失败同点最多 3 次；
+发下一航点（及重试）前用当前 /amcl_pose 软重锚定，压低 B→C 走廊粒子发散。
 
 前置：nav2_test_room.launch + publish_amcl_initial_pose 已跑通。
 
@@ -12,18 +14,20 @@ from __future__ import annotations
 
 import math
 import sys
+import time
 from pathlib import Path
 
 import rclpy
 import yaml
 from action_msgs.msg import GoalStatus
 from ament_index_python.packages import get_package_share_directory
-from geometry_msgs.msg import PoseStamped
+from geometry_msgs.msg import PoseStamped, PoseWithCovarianceStamped
 from nav2_msgs.action import NavigateToPose
 from nav2_msgs.srv import ClearEntireCostmap
 from rclpy.action import ActionClient
 from rclpy.node import Node
 from rclpy.parameter import Parameter
+from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
 
 # 冻结 world 航点（docs/阶段4.5-Nav2说明.md §4.4）；顺序 A→B→C（规格）
 WAYPOINTS = (
@@ -34,7 +38,18 @@ WAYPOINTS = (
 
 GOAL_TIMEOUT_SEC = 300.0
 INTER_GOAL_DWELL_SEC = 2.0
-MAX_ATTEMPTS_PER_WP = 2  # 首次 + 1 次重试
+# B→C 是压力测试唯一易挂腿：多等一会儿再发 C
+BEFORE_C_DWELL_SEC = 3.5
+RETRY_DWELL_SEC = 2.5
+MAX_ATTEMPTS_PER_WP = 3  # 首次 + 2 次重试（stress：run10 第 2 次重试能救，run02 需再多一次机会）
+CLEAR_TIMEOUT_SEC = 3.0
+
+_AMCL_QOS = QoSProfile(
+    reliability=ReliabilityPolicy.RELIABLE,
+    durability=DurabilityPolicy.TRANSIENT_LOCAL,
+    history=HistoryPolicy.KEEP_LAST,
+    depth=1,
+)
 
 
 def load_map_origin(map_yaml: Path) -> tuple[float, float, float]:
@@ -87,6 +102,13 @@ class PatrolMissionNode(Node):
         self._clear_local = self.create_client(
             ClearEntireCostmap, '/local_costmap/clear_entirely_local_costmap',
         )
+        self._amcl: PoseWithCovarianceStamped | None = None
+        self.create_subscription(
+            PoseWithCovarianceStamped, '/amcl_pose', self._on_amcl, _AMCL_QOS,
+        )
+        self._initialpose_pub = self.create_publisher(
+            PoseWithCovarianceStamped, '/initialpose', 10,
+        )
         self._timeout_timer = None
         self._dwell_timer = None
         self._goal_handle = None
@@ -105,31 +127,80 @@ class PatrolMissionNode(Node):
         )
         self.create_timer(0.5, self._kickoff_once)
 
+    def _on_amcl(self, msg: PoseWithCovarianceStamped) -> None:
+        self._amcl = msg
+
     def _kickoff_once(self) -> None:
         if self._started or self._done:
             return
         self._started = True
-        self._prepare_and_send()
+        self._prepare_and_send(reanchor=False)
 
-    def _clear_costmaps(self) -> None:
+    def _clear_costmaps_sync(self) -> None:
+        """等清图完成再发 goal（异步 fire-and-forget 是时序坑）。"""
         req = ClearEntireCostmap.Request()
+        futures: list[tuple[str, object]] = []
         for name, client in (
             ('global', self._clear_global),
             ('local', self._clear_local),
         ):
-            if client.service_is_ready():
-                client.call_async(req)
+            if client.wait_for_service(timeout_sec=1.0):
+                futures.append((name, client.call_async(req)))
             else:
                 self.get_logger().warn(f'clear {name} costmap service not ready')
 
-    def _prepare_and_send(self) -> None:
+        deadline = time.monotonic() + CLEAR_TIMEOUT_SEC
+        while futures and time.monotonic() < deadline and rclpy.ok():
+            pending: list[tuple[str, object]] = []
+            for name, fut in futures:
+                if fut.done():  # type: ignore[attr-defined]
+                    try:
+                        fut.result()  # type: ignore[attr-defined]
+                    except Exception as exc:  # noqa: BLE001
+                        self.get_logger().warn(f'clear {name} failed: {exc}')
+                else:
+                    pending.append((name, fut))
+            futures = pending
+            if futures:
+                rclpy.spin_once(self, timeout_sec=0.05)
+
+        if futures:
+            self.get_logger().warn(
+                f'clear costmap timeout ({CLEAR_TIMEOUT_SEC:.1f}s), continue anyway'
+            )
+
+    def _soft_reanchor(self) -> None:
+        """用当前 AMCL 估计重发 /initialpose，收紧粒子（站点软重锚定）。"""
+        if self._amcl is None:
+            self.get_logger().warn('soft reanchor skipped: no /amcl_pose yet')
+            return
+        msg = PoseWithCovarianceStamped()
+        msg.header.frame_id = 'map'
+        msg.header.stamp = self.get_clock().now().to_msg()
+        msg.pose.pose = self._amcl.pose.pose
+        # 略收紧协方差，鼓励抱团，避免走廊二次发散
+        msg.pose.covariance = list(self._amcl.pose.covariance)
+        msg.pose.covariance[0] = min(msg.pose.covariance[0], 0.25)
+        msg.pose.covariance[7] = min(msg.pose.covariance[7], 0.25)
+        msg.pose.covariance[35] = min(msg.pose.covariance[35], 0.15)
+        self._initialpose_pub.publish(msg)
+        print('PATROL: soft reanchor from /amcl_pose')
+        self.get_logger().info('Soft reanchor published to /initialpose')
+        # 给 AMCL 一点消化时间
+        end = time.monotonic() + 0.8
+        while time.monotonic() < end and rclpy.ok():
+            rclpy.spin_once(self, timeout_sec=0.05)
+
+    def _prepare_and_send(self, reanchor: bool = True) -> None:
         if self._idx >= len(self._goals):
             print('PATROL: FINAL PASS (A→B→C)')
             self._exit_code = 0
             self._done = True
             return
 
-        self._clear_costmaps()
+        self._clear_costmaps_sync()
+        if reanchor:
+            self._soft_reanchor()
         self._send_goal()
 
     def _send_goal(self) -> None:
@@ -189,9 +260,14 @@ class PatrolMissionNode(Node):
             if self._attempt < MAX_ATTEMPTS_PER_WP:
                 print(
                     f'PATROL: {name} {status_label(status)} — '
-                    f'retry after clear (attempt {self._attempt}/{MAX_ATTEMPTS_PER_WP})'
+                    f'retry after clear+reanchor '
+                    f'(attempt {self._attempt}/{MAX_ATTEMPTS_PER_WP})'
                 )
-                self._prepare_and_send()
+                if self._dwell_timer is not None:
+                    self._dwell_timer.cancel()
+                self._dwell_timer = self.create_timer(
+                    RETRY_DWELL_SEC, self._after_retry_dwell,
+                )
                 return
             self._fail(f'{name} NavigateToPose {status_label(status)}')
             return
@@ -199,9 +275,21 @@ class PatrolMissionNode(Node):
         print(f'PATROL: {name} SUCCEEDED (recoveries={self._recoveries})')
         self._idx += 1
         self._attempt = 0
+        dwell = INTER_GOAL_DWELL_SEC
+        # 下一航点是 C 时加长沉降
+        if self._idx < len(self._goals) and self._goals[self._idx][0] == 'C':
+            dwell = BEFORE_C_DWELL_SEC
         if self._dwell_timer is not None:
             self._dwell_timer.cancel()
-        self._dwell_timer = self.create_timer(INTER_GOAL_DWELL_SEC, self._after_dwell)
+        self._dwell_timer = self.create_timer(dwell, self._after_dwell)
+
+    def _after_retry_dwell(self) -> None:
+        if self._dwell_timer is not None:
+            self._dwell_timer.cancel()
+            self._dwell_timer = None
+        if self._done:
+            return
+        self._prepare_and_send(reanchor=True)
 
     def _after_dwell(self) -> None:
         if self._dwell_timer is not None:
@@ -209,7 +297,7 @@ class PatrolMissionNode(Node):
             self._dwell_timer = None
         if self._done:
             return
-        self._prepare_and_send()
+        self._prepare_and_send(reanchor=True)
 
     def _on_timeout(self) -> None:
         if self._done:

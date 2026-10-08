@@ -30,6 +30,7 @@ def generate_launch_description() -> LaunchDescription:
 
     use_sim_time = LaunchConfiguration('use_sim_time')
     rviz = LaunchConfiguration('rviz')
+    gui = LaunchConfiguration('gui')
 
     gazebo = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
@@ -41,6 +42,7 @@ def generate_launch_description() -> LaunchDescription:
             'spawn_y': '3.0',
             'spawn_yaw': '0.0',
             'use_sim_time': use_sim_time,
+            'gui': gui,
         }.items(),
     )
 
@@ -75,6 +77,11 @@ def generate_launch_description() -> LaunchDescription:
             'rviz',
             default_value='true',
             description='是否启动 RViz',
+        ),
+        DeclareLaunchArgument(
+            'gui',
+            default_value='true',
+            description='是否启动 gzclient；无人值守可设 false',
         ),
         gazebo,
         localization,
