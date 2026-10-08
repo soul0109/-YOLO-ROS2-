@@ -1,9 +1,13 @@
 #!/usr/bin/env python3
-"""4.5b：三航点单圈 NavigateToPose（A→B→C，无人工干预）。
+"""4.5b：巡检单圈 NavigateToPose（语义 A→B→C，无人工干预）。
 
-顺序对齐《巡检场景规格》充电→A→B→C。
-航点间 dwell + 同步清 costmap；失败同点最多 3 次；
-发下一航点（及重试）前用当前 /amcl_pose 软重锚定，压低 B→C 走廊粒子发散。
+Phase 1（2026-10-08）：仅拆 B→C 机动，A→B 保持直达。
+  A → B → B_egress → C_approach → C
+  - A/B/C：巡检点（规格闸门语义）
+  - B_egress / C_approach：机动点（导航实现细节；本版仍走同一 GoalChecker）
+
+航点间 dwell + 同步清 costmap；失败同点最多 3 次。
+soft reanchor 默认关闭（ABORT 后禁止）。
 
 前置：nav2_test_room.launch + publish_amcl_initial_pose 已跑通。
 
@@ -29,24 +33,27 @@ from rclpy.node import Node
 from rclpy.parameter import Parameter
 from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
 
-# 冻结 world 航点（docs/阶段4.5-Nav2说明.md §4.4）；顺序 A→B→C（规格）
+# kind: inspect = 业务巡检点；maneuver = 进出门/掉头机动（Phase1 仍用同一 Nav2 GoalChecker）
+# world 坐标冻结自 docs/阶段4.5-Nav2说明.md §4.4 + Phase1 机动点
 WAYPOINTS = (
-    ('A', 3.15, 1.75, -math.pi / 2.0),
-    ('B', 8.45, 1.75, -math.pi / 2.0),
-    ('C', 5.25, 4.25, math.pi / 2.0),
+    # name, wx, wy, yaw, kind
+    ('A', 3.15, 1.75, -math.pi / 2.0, 'inspect'),
+    ('B', 8.45, 1.75, -math.pi / 2.0, 'inspect'),
+    # 房 B 内开阔处完成掉头，车头朝北对门（不负责精确对柜）
+    ('B_egress', 8.45, 1.90, math.pi / 2.0, 'maneuver'),
+    # 走廊对准 C 门，准备北向进房
+    ('C_approach', 5.25, 3.00, math.pi / 2.0, 'maneuver'),
+    ('C', 5.25, 4.25, math.pi / 2.0, 'inspect'),
 )
 
 GOAL_TIMEOUT_SEC = 300.0
 INTER_GOAL_DWELL_SEC = 2.0
-# B→C 是压力测试唯一易挂腿：多等一会儿再发 C
-BEFORE_C_DWELL_SEC = 3.5
+# 进入最终巡检点 C 前略多等
+BEFORE_INSPECT_C_DWELL_SEC = 3.5
 RETRY_DWELL_SEC = 2.5
-MAX_ATTEMPTS_PER_WP = 3  # 首次 + 2 次重试
+MAX_ATTEMPTS_PER_WP = 3
 CLEAR_TIMEOUT_SEC = 3.0
-# 2026-10-08：stress run5 在 C ABORT 后 soft reanchor，随后观测到 map→odom TF NaN。
-# 默认关闭；仅成功航点切换且 pose 有限、协方差未爆时才允许（见 _soft_reanchor）。
 ENABLE_SOFT_REANCHOR = False
-# 软锚定协方差上限（超过则跳过，避免把「不确定/坏估计」钉死）
 SOFT_REANCHOR_MAX_XY_VAR = 0.5
 SOFT_REANCHOR_MAX_YAW_VAR = 0.5
 
@@ -92,10 +99,13 @@ class PatrolMissionNode(Node):
         map_yaml = share / 'maps' / 'test_room.yaml'
         ox, oy, _ = load_map_origin(map_yaml)
 
-        self._goals: list[tuple[str, float, float, tuple[float, float, float, float]]] = []
-        for name, wx, wy, yaw in WAYPOINTS:
+        # (name, mx, my, quat, kind)
+        self._goals: list[
+            tuple[str, float, float, tuple[float, float, float, float], str]
+        ] = []
+        for name, wx, wy, yaw, kind in WAYPOINTS:
             mx, my = world_to_map_xy(wx, wy, ox, oy)
-            self._goals.append((name, mx, my, yaw_to_quat(yaw)))
+            self._goals.append((name, mx, my, yaw_to_quat(yaw), kind))
 
         self._idx = 0
         self._attempt = 0
@@ -119,7 +129,10 @@ class PatrolMissionNode(Node):
         self._dwell_timer = None
         self._goal_handle = None
         self._current_name = ''
+        self._current_kind = ''
         self._recoveries = 0
+        self._seg_t0 = 0.0
+        self._seg_log: list[str] = []
         self._started = False
 
         clock_deadline = self.get_clock().now() + rclpy.duration.Duration(seconds=20.0)
@@ -128,9 +141,11 @@ class PatrolMissionNode(Node):
                 break
             rclpy.spin_once(self, timeout_sec=0.1)
 
+        names = ' → '.join(g[0] for g in self._goals)
         self.get_logger().info(
-            f'Patrol A→B→C ready ({len(self._goals)} goals, map={map_yaml})'
+            f'Patrol ready ({len(self._goals)} goals: {names}, map={map_yaml})'
         )
+        print(f'PATROL: route {names}')
         self.create_timer(0.5, self._kickoff_once)
 
     def _on_amcl(self, msg: PoseWithCovarianceStamped) -> None:
@@ -217,7 +232,6 @@ class PatrolMissionNode(Node):
         msg.pose.pose.position.x = p.x
         msg.pose.pose.position.y = p.y
         msg.pose.pose.position.z = 0.0
-        # 归一化四元数，不人为压小协方差（避免虚假自信）
         msg.pose.pose.orientation.x = q.x / qn
         msg.pose.pose.orientation.y = q.y / qn
         msg.pose.pose.orientation.z = q.z / qn
@@ -232,7 +246,8 @@ class PatrolMissionNode(Node):
 
     def _prepare_and_send(self, reanchor: bool = False) -> None:
         if self._idx >= len(self._goals):
-            print('PATROL: FINAL PASS (A→B→C)')
+            self._print_seg_summary()
+            print('PATROL: FINAL PASS (A→B→C via maneuver split)')
             self._exit_code = 0
             self._done = True
             return
@@ -247,7 +262,7 @@ class PatrolMissionNode(Node):
             self._fail('Action server /navigate_to_pose 不可用')
             return
 
-        name, mx, my, quat = self._goals[self._idx]
+        name, mx, my, quat, kind = self._goals[self._idx]
         goal = NavigateToPose.Goal()
         goal.pose = PoseStamped()
         goal.pose.header.frame_id = 'map'
@@ -261,17 +276,21 @@ class PatrolMissionNode(Node):
 
         self._attempt += 1
         print(
-            f'PATROL: sending goal {name} '
+            f'PATROL: sending goal {name} kind={kind} '
             f'map=({mx:.3f}, {my:.3f}) attempt={self._attempt}/{MAX_ATTEMPTS_PER_WP}'
         )
-        self.get_logger().info(f'Sending waypoint {name} attempt={self._attempt}')
+        self.get_logger().info(
+            f'Sending waypoint {name} kind={kind} attempt={self._attempt}'
+        )
         if self._timeout_timer is not None:
             self._timeout_timer.cancel()
         self._timeout_timer = self.create_timer(GOAL_TIMEOUT_SEC, self._on_timeout)
         fut = self._client.send_goal_async(goal, feedback_callback=self._on_feedback)
         fut.add_done_callback(self._on_goal_response)
         self._current_name = name
+        self._current_kind = kind
         self._recoveries = 0
+        self._seg_t0 = time.monotonic()
 
     def _on_feedback(self, feedback_msg) -> None:
         fb = feedback_msg.feedback
@@ -286,6 +305,21 @@ class PatrolMissionNode(Node):
         result_fut = self._goal_handle.get_result_async()
         result_fut.add_done_callback(self._on_result)
 
+    def _log_segment(self, status: str) -> None:
+        dt = time.monotonic() - self._seg_t0
+        line = (
+            f'PATROL_SEG: [{self._current_name}] {status} '
+            f'kind={self._current_kind} recoveries={self._recoveries} '
+            f'duration={dt:.1f}s'
+        )
+        print(line)
+        self._seg_log.append(line)
+
+    def _print_seg_summary(self) -> None:
+        print('PATROL_SEG_SUMMARY:')
+        for line in self._seg_log:
+            print(f'  {line}')
+
     def _on_result(self, future) -> None:
         if self._done:
             return
@@ -296,6 +330,7 @@ class PatrolMissionNode(Node):
         status = wrapped.status
         name = self._current_name
         if status != GoalStatus.STATUS_SUCCEEDED:
+            self._log_segment(status_label(status))
             if self._attempt < MAX_ATTEMPTS_PER_WP:
                 print(
                     f'PATROL: {name} {status_label(status)} — '
@@ -308,16 +343,17 @@ class PatrolMissionNode(Node):
                     RETRY_DWELL_SEC, self._after_retry_dwell,
                 )
                 return
+            self._print_seg_summary()
             self._fail(f'{name} NavigateToPose {status_label(status)}')
             return
 
+        self._log_segment('SUCCESS')
         print(f'PATROL: {name} SUCCEEDED (recoveries={self._recoveries})')
         self._idx += 1
         self._attempt = 0
         dwell = INTER_GOAL_DWELL_SEC
-        # 下一航点是 C 时加长沉降
         if self._idx < len(self._goals) and self._goals[self._idx][0] == 'C':
-            dwell = BEFORE_C_DWELL_SEC
+            dwell = BEFORE_INSPECT_C_DWELL_SEC
         if self._dwell_timer is not None:
             self._dwell_timer.cancel()
         self._dwell_timer = self.create_timer(dwell, self._after_dwell)
@@ -328,7 +364,6 @@ class PatrolMissionNode(Node):
             self._dwell_timer = None
         if self._done:
             return
-        # ABORT 后禁止 soft reanchor：坏估计写回可能放大成 map→odom NaN
         self._prepare_and_send(reanchor=False)
 
     def _after_dwell(self) -> None:
@@ -337,14 +372,15 @@ class PatrolMissionNode(Node):
             self._dwell_timer = None
         if self._done:
             return
-        # 仅成功切换航点时可选 soft reanchor（默认 ENABLE_SOFT_REANCHOR=False）
         self._prepare_and_send(reanchor=ENABLE_SOFT_REANCHOR)
 
     def _on_timeout(self) -> None:
         if self._done:
             return
+        self._log_segment('TIMEOUT')
         if self._goal_handle is not None:
             self._goal_handle.cancel_goal_async()
+        self._print_seg_summary()
         self._fail(f'{self._current_name} timeout after {GOAL_TIMEOUT_SEC:.0f}s')
 
     def _fail(self, msg: str) -> None:
