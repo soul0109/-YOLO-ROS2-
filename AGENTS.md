@@ -4,10 +4,11 @@
 
 ## 阅读顺序（勿跳过）
 
-1. [`docs/当前进度.md`](docs/当前进度.md) — 现在做到哪、阶段勾选、下一步、已知坑
+1. [`docs/当前进度.md`](docs/当前进度.md) — **NOW**：阶段、阻塞、下一步
 2. [`docs/后续开发计划与建模攻关方案.md`](docs/后续开发计划与建模攻关方案.md) — **主执行手册**（任务顺序、建模、验收闸门）
 3. [`docs/阶段1验收总结与项目交接包.md`](docs/阶段1验收总结与项目交接包.md) — 阶段证据 + 给其他 AI 的交接约束
-4. 按需：[`项目执行计划.md`](docs/项目执行计划.md) · [`仓库结构说明.md`](docs/仓库结构说明.md) · [`docs/README.md`](docs/README.md)
+4. 过程经验：[`docs/开发历程/`](docs/开发历程/README.md)（只追加；勿用活文档代替）
+5. 按需：[`项目执行计划.md`](docs/项目执行计划.md) · [`仓库结构说明.md`](docs/仓库结构说明.md) · [`docs/README.md`](docs/README.md)
 
 协作细节：[`docs/协作方式-VM直开.md`](docs/协作方式-VM直开.md)
 
@@ -33,7 +34,7 @@
 
 ```text
 先读 AGENTS.md 和 docs/当前进度.md，按执行手册从当前进度接着推进。
-验收闸门内持续推进，子任务做完更新 docs/当前进度.md。
+验收闸门内持续推进；里程碑结束：更新 docs/当前进度.md（短）+ 追加 docs/开发历程/ 一条。
 ```
 
 有具体目标可补一句（可选），例如「接着做阶段 5 YOLO」。有报错再补：完整日志 + 命令 + 文件片段 + 已尝试方案。
@@ -43,7 +44,7 @@
 ## 硬约束（已定）
 
 - 主环境：**Ubuntu 22.04 + ROS2 Humble + Gazebo Classic 11**
-- 改进度 → `docs/当前进度.md`；计划调整 → `docs/后续开发计划与建模攻关方案.md`
+- 改进度 → `docs/当前进度.md`（NOW）+ 追加 `docs/开发历程/`（THEN）；计划调整 → `docs/后续开发计划与建模攻关方案.md`
 - 主开发在 VM `~/inspection-robot`；`bash scripts/git_sync_push.sh "msg"` 同步
 - 每阶段 checklist 全绿再进下一阶段
 
