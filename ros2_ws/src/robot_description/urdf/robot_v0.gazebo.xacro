@@ -40,6 +40,9 @@
     <mu2>0.1</mu2>
     <kp>1000000.0</kp>
     <kd>100.0</kd>
+    <!-- H_A 单变量：与后轮对齐 minDepth/maxVel；不改 mu / 惯量 / 位置 -->
+    <minDepth>0.001</minDepth>
+    <maxVel>1.0</maxVel>
   </gazebo>
 
   <gazebo reference="laser_link">
