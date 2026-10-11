@@ -12,14 +12,19 @@ import json
 import shutil
 import sys
 import uuid
-from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-# Reuse R1 offline judge (same directory).
+# Event layer consumes Decision only — pixel ROIs stay in roi_decision.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from roi_judge_d1 import DEFAULT_RULES, judge_one, load_rules  # noqa: E402
+from roi_decision import (  # noqa: E402
+    DEFAULT_RULES,
+    Decision,
+    decisions_for_station,
+    load_bgr_and_meta,
+    load_rules,
+)
 
 REPO = Path(__file__).resolve().parents[1]
 DEFAULT_D1 = REPO / 'bags' / 'vision_d1_seed42'
@@ -57,23 +62,6 @@ VERDICTS = frozenset({'PASS', 'FAIL', 'UNKNOWN'})
 LIFECYCLE = frozenset({'open', 'acknowledged', 'closed'})
 
 
-@dataclass
-class Decision:
-    """Thin structured judgment consumed by the event layer (not a ROIProvider)."""
-
-    object_type: str
-    verdict: str
-    reason: str
-    roi_source: str
-    roi_rules_version: str
-    measurements: dict[str, Any] = field(default_factory=dict)
-    confidence: float | None = None
-
-    def __post_init__(self) -> None:
-        if self.verdict not in VERDICTS:
-            raise ValueError(f'bad verdict: {self.verdict}')
-
-
 def load_patrol_poses(route_path: Path) -> dict[str, dict[str, float]]:
     import yaml
 
@@ -89,101 +77,6 @@ def _stamp_to_epoch(stamp: dict[str, Any] | None, fallback: float) -> float:
     if not stamp:
         return fallback
     return float(stamp.get('sec', 0)) + float(stamp.get('nanosec', 0)) / 1e9
-
-
-def decisions_from_r1(
-    judge: dict[str, Any],
-    rules_version: str,
-) -> list[Decision]:
-    """Map R1 rollups → one Decision per object_type (fixed_window ROI)."""
-    obj = judge['objects']
-    verd = judge['verdict']
-    dbg = judge.get('debug', {})
-    decisions: list[Decision] = []
-
-    leds = obj['leds']
-    led_v = verd['leds']
-    if led_v == 'PASS':
-        reason = 'all_leds_green'
-    elif led_v == 'FAIL':
-        reason = f'led_non_green:{",".join(leds)}'
-    else:
-        reason = 'led_unknown_in_slots'
-    decisions.append(
-        Decision(
-            object_type='indicator_light',
-            verdict=led_v,
-            reason=reason,
-            roi_source='fixed_window',
-            roi_rules_version=rules_version,
-            measurements={
-                'leds': leds,
-                'led_slots': dbg.get('led_slots'),
-            },
-            confidence=None,
-        )
-    )
-
-    panel = obj['panel']
-    panel_v = verd['panel']
-    if panel_v == 'PASS':
-        reason = 'panel_lit'
-    elif panel_v == 'FAIL':
-        reason = 'panel_dark'
-    else:
-        reason = str(dbg.get('panel', {}).get('reason', 'panel_unknown'))
-    decisions.append(
-        Decision(
-            object_type='panel',
-            verdict=panel_v,
-            reason=reason,
-            roi_source='fixed_window',
-            roi_rules_version=rules_version,
-            measurements={'panel': panel, **(dbg.get('panel') or {})},
-            confidence=None,
-        )
-    )
-
-    leak = obj['leak']
-    leak_v = verd['leak']
-    if leak_v == 'PASS':
-        reason = 'leak_none'
-    elif leak_v == 'FAIL':
-        reason = 'leak_fixed_fail'
-    else:
-        reason = str(dbg.get('leak', {}).get('reason', 'leak_unknown'))
-    decisions.append(
-        Decision(
-            object_type='inspection_region',
-            verdict=leak_v,
-            reason=reason,
-            roi_source='fixed_window',
-            roi_rules_version=rules_version,
-            measurements={'leak': leak, **(dbg.get('leak') or {})},
-            confidence=None,
-        )
-    )
-    return decisions
-
-
-def decision_bbox_fixture(rules_version: str) -> Decision:
-    """Protocol hook only: fake bbox Decision shape — NOT a real YOLO detector."""
-    return Decision(
-        object_type='inspection_region',
-        verdict='FAIL',
-        reason='leak_fixed_fail',
-        roi_source='bbox_fixture',
-        roi_rules_version=rules_version,
-        measurements={
-            'bbox_xyxy': [240, 300, 400, 400],
-            'bbox_note': (
-                'protocol hook only; synthetic fixture ≠ real YOLO / trained detector'
-            ),
-            'leak': 'fixed_fail',
-            'cyan_frac': 0.2218,
-        },
-        confidence=0.42,
-    )
 
 
 def decision_to_event(
@@ -312,17 +205,16 @@ def emit_for_station(
     store: EventStore,
     meta_path: Path,
     rules: dict[str, Any],
-    rules_version: str,
     mission_id: str,
     poses: dict[str, dict[str, float]],
     out_dir: Path,
     include_pass: bool,
-    include_bbox_fixture: bool,
+    use_detector_box: bool,
     source: str,
     amcl_error_m: float | None,
 ) -> dict[str, Any]:
-    judge = judge_one(meta_path, rules)
-    meta = json.loads(meta_path.read_text(encoding='utf-8'))
+    # Decisions only — this function must not open rules['rois'] / pixel boxes.
+    bgr, meta = load_bgr_and_meta(meta_path)
     station_id = str(meta['station_id'])
     src_img = meta_path.parent / meta['image']
     if not src_img.is_file() or src_img.stat().st_size == 0:
@@ -338,22 +230,14 @@ def emit_for_station(
         raise KeyError(f'no station_pose for {station_id}')
     frame_id = 'map'
 
-    decisions = decisions_from_r1(judge, rules_version)
-    if include_bbox_fixture and station_id == 'B':
-        # Distinct object_type so bbox fixture is visible without colliding
-        # with fixed_window inspection_region dedup key.
-        bbox_d = decision_bbox_fixture(rules_version)
-        decisions.append(
-            Decision(
-                object_type='inspection_region_bbox_demo',
-                verdict=bbox_d.verdict,
-                reason=bbox_d.reason,
-                roi_source=bbox_d.roi_source,
-                roi_rules_version=bbox_d.roi_rules_version,
-                measurements=bbox_d.measurements,
-                confidence=bbox_d.confidence,
-            )
-        )
+    use_db = bool(use_detector_box and station_id == 'B')
+    decisions = decisions_for_station(
+        bgr,
+        meta,
+        rules,
+        use_fixed_window=True,
+        use_detector_box=use_db,
+    )
 
     stats = {'created': 0, 'deduped': 0, 'skipped_pass': 0, 'blocked_unknown_to_pass': 0}
     written: list[dict[str, Any]] = []
@@ -379,7 +263,7 @@ def emit_for_station(
 
     return {
         'station_id': station_id,
-        'judge_verdict': judge['verdict'],
+        'roi_sources': sorted({d.roi_source for d in decisions}),
         'image_path': image_path,
         'image_bytes': dest.stat().st_size,
         'stats': stats,
@@ -419,11 +303,12 @@ def run_self_check(args: argparse.Namespace) -> int:
     args.mission_id = 'mission_e1_selfcheck'
     args.stations = ['B']
     args.include_pass = False
-    args.include_bbox_fixture = True
+    args.include_detector_box = True
     n1 = _run_emit(args)
     events = EventStore(out / 'events.jsonl', args.dedup_window_sec).events
     fails = [e for e in events if e['verdict'] == 'FAIL']
     assert fails, 'expected ≥1 FAIL'
+    assert any(e.get('roi_source') == 'detector_box' for e in events), events
     for ev in fails:
         errs = validate_event(ev)
         assert not errs, errs
@@ -457,7 +342,7 @@ def run_self_check(args: argparse.Namespace) -> int:
     # 4) Cross station: same mission + window, A vs B must both persist
     args.mission_id = 'mission_e1_cross_station'
     args.stations = ['B']
-    args.include_bbox_fixture = False
+    args.include_detector_box = False
     before_cross = len(EventStore(out / 'events.jsonl', args.dedup_window_sec).events)
     n_b = _run_emit(args)
     after_b = EventStore(out / 'events.jsonl', args.dedup_window_sec).events
@@ -550,7 +435,6 @@ def run_self_check(args: argparse.Namespace) -> int:
 
 def _run_emit(args: argparse.Namespace) -> dict[str, Any]:
     rules = load_rules(args.rules)
-    rules_version = str(rules.get('schema', 'roi_rules_v1'))
     poses = load_patrol_poses(args.route)
     out = Path(args.output)
     out.mkdir(parents=True, exist_ok=True)
@@ -568,12 +452,11 @@ def _run_emit(args: argparse.Namespace) -> dict[str, Any]:
             store=store,
             meta_path=metas[0],
             rules=rules,
-            rules_version=rules_version,
             mission_id=args.mission_id,
             poses=poses,
             out_dir=out,
             include_pass=args.include_pass,
-            include_bbox_fixture=args.include_bbox_fixture,
+            use_detector_box=args.include_detector_box,
             source=args.source,
             amcl_error_m=args.amcl_error_m,
         )
@@ -592,13 +475,14 @@ def _run_emit(args: argparse.Namespace) -> dict[str, Any]:
         'dedup_window_sec': args.dedup_window_sec,
         'totals': totals,
         'note': (
-            'E1≠5B≠M2 exit. Fixed-window ROI replay ≠ live detector loop. '
+            'E1≠5B≠M2 exit. Decisions from roi_decision '
+            '(fixed_window|detector_box); event layer never reads pixel ROIs. '
             'status=lifecycle only; verdict=PASS|FAIL|UNKNOWN.'
         ),
         'stations_detail': [
             {
                 'station_id': r['station_id'],
-                'judge_verdict': r['judge_verdict'],
+                'roi_sources': r['roi_sources'],
                 'image_path': r['image_path'],
                 'image_bytes': r['image_bytes'],
                 'stats': r['stats'],
@@ -639,15 +523,15 @@ def main(argv: list[str] | None = None) -> int:
         help='Also persist PASS decisions (default: only FAIL/UNKNOWN)',
     )
     p.add_argument(
-        '--include-bbox-fixture',
+        '--include-detector-box',
         action='store_true',
         default=True,
-        help='Emit one bbox_fixture Decision on station B (default on)',
+        help='Station B leak via detector_box fixture path (default on; ≠ real YOLO)',
     )
     p.add_argument(
-        '--no-bbox-fixture',
+        '--no-detector-box',
         action='store_false',
-        dest='include_bbox_fixture',
+        dest='include_detector_box',
     )
     p.add_argument('--source', default='roi_rule_replay')
     p.add_argument(
