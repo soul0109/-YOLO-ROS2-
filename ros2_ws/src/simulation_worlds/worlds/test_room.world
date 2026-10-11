@@ -325,6 +325,7 @@
 
     <!-- ═══════════════ 柜位视觉资产 W1（选项 A 默认静态布局；漏液固定不随机）═══════════════ -->
     <!-- 材质约定：灯 green/red/yellow=有 emissive；off=暗色无 emissive。面板 lit=有 emissive；dark=无。 -->
+    <!-- 布局：灯一排在上 z≈0.52；面板在下 z≈0.32（高 0.15→顶≈0.395），中间留空，避免与灯重叠。 -->
     <!-- GT 粗态：A leds=[green,green,off] panel=dark leak=none；B=[green,green,red] lit + 固定漏液；C=[green,green,yellow] dark -->
 
     <!-- ═══════════════ 柜 A（3.15, 0.35）绿/绿/灭 · 面板 dark · 无漏液 ═══════════════ -->
@@ -339,8 +340,8 @@
       </link>
     </model>
     <model name="cabinet_a_led_1">
-      <!-- state: green · Ø8cm · z≈0.45 -->
-      <pose>2.95 0.560 0.45 1.5708 0 0</pose>
+      <!-- state: green · Ø8cm · z≈0.52（灯带在上） -->
+      <pose>2.95 0.560 0.52 1.5708 0 0</pose>
       <static>true</static>
       <link name="link"><visual name="visual"><geometry><cylinder><radius>0.04</radius><length>0.02</length></cylinder></geometry>
         <material><ambient>0 0.8 0 1</ambient><diffuse>0 0.6 0 1</diffuse><emissive>0 1 0 1</emissive></material>
@@ -348,7 +349,7 @@
     </model>
     <model name="cabinet_a_led_2">
       <!-- state: green -->
-      <pose>3.15 0.560 0.45 1.5708 0 0</pose>
+      <pose>3.15 0.560 0.52 1.5708 0 0</pose>
       <static>true</static>
       <link name="link"><visual name="visual"><geometry><cylinder><radius>0.04</radius><length>0.02</length></cylinder></geometry>
         <material><ambient>0 0.8 0 1</ambient><diffuse>0 0.6 0 1</diffuse><emissive>0 1 0 1</emissive></material>
@@ -356,15 +357,15 @@
     </model>
     <model name="cabinet_a_led_3">
       <!-- state: off（无 emissive） -->
-      <pose>3.35 0.560 0.45 1.5708 0 0</pose>
+      <pose>3.35 0.560 0.52 1.5708 0 0</pose>
       <static>true</static>
       <link name="link"><visual name="visual"><geometry><cylinder><radius>0.04</radius><length>0.02</length></cylinder></geometry>
-        <material><ambient>0.08 0.08 0.08 1</ambient><diffuse>0.12 0.12 0.12 1</diffuse></material>
+        <material><ambient>0.02 0.02 0.02 1</ambient><diffuse>0.04 0.04 0.04 1</diffuse></material>
       </visual></link>
     </model>
     <model name="cabinet_a_panel">
-      <!-- state: dark -->
-      <pose>3.15 0.555 0.40 0 0 0</pose>
+      <!-- state: dark · 屏在灯下方，z 中心 0.32 -->
+      <pose>3.15 0.555 0.32 0 0 0</pose>
       <static>true</static>
       <link name="link"><visual name="visual"><geometry><box><size>0.30 0.01 0.15</size></box></geometry>
         <material><ambient>0.05 0.05 0.08 1</ambient><diffuse>0.08 0.08 0.12 1</diffuse></material>
@@ -384,7 +385,7 @@
     </model>
     <model name="cabinet_b_led_1">
       <!-- state: green -->
-      <pose>8.25 0.560 0.45 1.5708 0 0</pose>
+      <pose>8.25 0.560 0.52 1.5708 0 0</pose>
       <static>true</static>
       <link name="link"><visual name="visual"><geometry><cylinder><radius>0.04</radius><length>0.02</length></cylinder></geometry>
         <material><ambient>0 0.8 0 1</ambient><diffuse>0 0.6 0 1</diffuse><emissive>0 1 0 1</emissive></material>
@@ -392,7 +393,7 @@
     </model>
     <model name="cabinet_b_led_2">
       <!-- state: green -->
-      <pose>8.45 0.560 0.45 1.5708 0 0</pose>
+      <pose>8.45 0.560 0.52 1.5708 0 0</pose>
       <static>true</static>
       <link name="link"><visual name="visual"><geometry><cylinder><radius>0.04</radius><length>0.02</length></cylinder></geometry>
         <material><ambient>0 0.8 0 1</ambient><diffuse>0 0.6 0 1</diffuse><emissive>0 1 0 1</emissive></material>
@@ -400,15 +401,15 @@
     </model>
     <model name="cabinet_b_led_3">
       <!-- state: red -->
-      <pose>8.65 0.560 0.45 1.5708 0 0</pose>
+      <pose>8.65 0.560 0.52 1.5708 0 0</pose>
       <static>true</static>
       <link name="link"><visual name="visual"><geometry><cylinder><radius>0.04</radius><length>0.02</length></cylinder></geometry>
         <material><ambient>0.8 0 0 1</ambient><diffuse>0.6 0 0 1</diffuse><emissive>1 0 0 1</emissive></material>
       </visual></link>
     </model>
     <model name="cabinet_b_panel">
-      <!-- state: lit（亮区 emissive；YOLO 类 panel，亮暗由 ROI） -->
-      <pose>8.45 0.555 0.40 0 0 0</pose>
+      <!-- state: lit（亮区 emissive；YOLO 类 panel，亮暗由 ROI）· 屏在灯下方 -->
+      <pose>8.45 0.555 0.32 0 0 0</pose>
       <static>true</static>
       <link name="link"><visual name="visual"><geometry><box><size>0.30 0.01 0.15</size></box></geometry>
         <material><ambient>0.15 0.45 0.55 1</ambient><diffuse>0.25 0.65 0.75 1</diffuse><emissive>0.35 0.95 1.0 1</emissive></material>
@@ -438,7 +439,7 @@
     </model>
     <model name="cabinet_c_led_1">
       <!-- state: green -->
-      <pose>5.05 5.440 0.45 1.5708 0 0</pose>
+      <pose>5.05 5.440 0.52 1.5708 0 0</pose>
       <static>true</static>
       <link name="link"><visual name="visual"><geometry><cylinder><radius>0.04</radius><length>0.02</length></cylinder></geometry>
         <material><ambient>0 0.8 0 1</ambient><diffuse>0 0.6 0 1</diffuse><emissive>0 1 0 1</emissive></material>
@@ -446,7 +447,7 @@
     </model>
     <model name="cabinet_c_led_2">
       <!-- state: green -->
-      <pose>5.25 5.440 0.45 1.5708 0 0</pose>
+      <pose>5.25 5.440 0.52 1.5708 0 0</pose>
       <static>true</static>
       <link name="link"><visual name="visual"><geometry><cylinder><radius>0.04</radius><length>0.02</length></cylinder></geometry>
         <material><ambient>0 0.8 0 1</ambient><diffuse>0 0.6 0 1</diffuse><emissive>0 1 0 1</emissive></material>
@@ -454,15 +455,15 @@
     </model>
     <model name="cabinet_c_led_3">
       <!-- state: yellow -->
-      <pose>5.45 5.440 0.45 1.5708 0 0</pose>
+      <pose>5.45 5.440 0.52 1.5708 0 0</pose>
       <static>true</static>
       <link name="link"><visual name="visual"><geometry><cylinder><radius>0.04</radius><length>0.02</length></cylinder></geometry>
         <material><ambient>0.8 0.8 0 1</ambient><diffuse>0.6 0.6 0 1</diffuse><emissive>1 1 0 1</emissive></material>
       </visual></link>
     </model>
     <model name="cabinet_c_panel">
-      <!-- state: dark -->
-      <pose>5.25 5.445 0.40 0 0 0</pose>
+      <!-- state: dark · 屏在灯下方 -->
+      <pose>5.25 5.445 0.32 0 0 0</pose>
       <static>true</static>
       <link name="link"><visual name="visual"><geometry><box><size>0.30 0.01 0.15</size></box></geometry>
         <material><ambient>0.05 0.05 0.08 1</ambient><diffuse>0.08 0.08 0.12 1</diffuse></material>
