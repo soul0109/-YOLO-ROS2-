@@ -1127,6 +1127,198 @@ def migrate_box_tier_sidecars(root: Path) -> dict[str, int]:
 annotate_untrusted_existing = migrate_box_tier_sidecars
 
 
+def _c_off_slot_means(im: np.ndarray, rules: dict[str, Any], leds: list[str]) -> list[dict[str, Any]]:
+    """Per image-slot mean_g for model leds labeled off (C / face_pos_y)."""
+    slot_map = rules.get('led_image_to_model', {}).get('face_pos_y', [0, 1, 2])
+    y0, y1 = rules['rois']['led_row_y']
+    out = []
+    for slot_i, model_i in enumerate(slot_map):
+        if model_i >= len(leds) or leds[model_i] != 'off':
+            continue
+        x0, x1 = rules['rois']['led_slots_x'][slot_i]
+        mean_g = float(im[y0:y1, x0:x1][:, :, 1].mean())
+        out.append({'slot': slot_i, 'model_i': model_i, 'mean_g': round(mean_g, 1), 'ok': mean_g <= 120})
+    return out
+
+
+def update_excluded_after_coff_replace(
+    root: Path,
+    *,
+    old_id: str,
+    new_id: str,
+    verify: dict[str, Any],
+) -> None:
+    path = root / 'manifests' / 'excluded_frames.json'
+    data = load_excluded(root)
+    frames = list(data.get('frames') or [])
+    for f in frames:
+        if f.get('image_id') == old_id:
+            f['recollect_needed'] = False
+            f['superseded_by'] = new_id
+            f['status'] = 'superseded_kept_on_disk'
+            f['recollect_note'] = (
+                f'replaced by {new_id} (C2.2); keep evidence; do not use as aug parent'
+            )
+        if f.get('image_id') == 'c2_20261011_b4_aug_v2_H_MISS_C_0060':
+            f['recollect_needed'] = False
+            f['status'] = 'derived_from_superseded_parent'
+            f['recollect_note'] = (
+                'parent superseded; do not use old parent for aug; frame stays excluded'
+            )
+    data['frames'] = frames
+    data['updated_at'] = _now_iso()
+    data['c22_coff_replace'] = {
+        'old_image_id': old_id,
+        'new_image_id': new_id,
+        'verify': verify,
+        'note': 'old ids remain excluded from credit; new id is credited raw',
+    }
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + '\n', encoding='utf-8')
+
+
+def c22_fill_gaps(
+    root: Path,
+    rules: dict[str, Any],
+    *,
+    settle_s: float = 0.85,
+    run_id: str = '',
+) -> dict[str, Any]:
+    """C2.2: new batch_ids only — fill credited-raw gaps; no --force on prior evidence."""
+    rid = run_id or datetime.now().strftime('%Y%m%d')
+    cam = CameraSession()
+    batch_mans: list[dict[str, Any]] = []
+    try:
+        # --- NA/NB at 1.2m ---
+        # N-A1 +4, N-B1 +8 (fresh seeds, avoid relying on aug)
+        plan_ab: list[tuple[str, int, float]] = []
+        for seed in (101, 102, 103, 104):
+            plan_ab.append(('A', seed, 1.2))
+        for seed in (101, 102, 103, 104, 105, 106, 107, 108):
+            plan_ab.append(('B', seed, 1.2))
+        b_ab = f'c2_{rid}_c22_na_nb'
+        if (root / 'batches' / b_ab).exists():
+            b_ab = f'{b_ab}_{datetime.now().strftime("%H%M%S")}'
+        print(f'C2.2 LIVE {b_ab} n={len(plan_ab)} ...', flush=True)
+        batch_mans.append(
+            collect_live_plan(
+                root, b_ab, plan_ab, rules, cam, force=False, settle_s=settle_s
+            )
+        )
+
+        # --- distance +6 each ---
+        plan_d: list[tuple[str, int, float]] = []
+        for dist in (1.0, 1.5):
+            for seed in (101, 102):
+                for sid in ('A', 'B', 'C'):
+                    plan_d.append((sid, seed, dist))
+        b_dist = f'c2_{rid}_c22_dist'
+        if (root / 'batches' / b_dist).exists():
+            b_dist = f'{b_dist}_{datetime.now().strftime("%H%M%S")}'
+        print(f'C2.2 LIVE {b_dist} n={len(plan_d)} ...', flush=True)
+        batch_mans.append(
+            collect_live_plan(
+                root, b_dist, plan_d, rules, cam, force=False, settle_s=settle_s
+            )
+        )
+
+        # --- replace excluded C seed8 off ---
+        b_coff = f'c2_{rid}_c22_coff_s8'
+        if (root / 'batches' / b_coff).exists():
+            b_coff = f'{b_coff}_{datetime.now().strftime("%H%M%S")}'
+        print(f'C2.2 LIVE {b_coff} C seed=8 replace ...', flush=True)
+        man_c = collect_live_plan(
+            root,
+            b_coff,
+            [('C', 8, 1.2)],
+            rules,
+            cam,
+            force=False,
+            settle_s=max(1.0, settle_s),
+        )
+        batch_mans.append(man_c)
+        new_id = man_c['image_ids'][0]
+        jp = root / 'batches' / b_coff / 'images' / f'{new_id}.json'
+        meta = json.loads(jp.read_text(encoding='utf-8'))
+        im = cv2.imread(str(root / 'batches' / b_coff / meta['file_name']))
+        if im is None:
+            raise RuntimeError(f'C2.2 coff replace: undecodable {new_id}')
+        verify_slots = _c_off_slot_means(im, rules, list((meta.get('states') or {}).get('leds') or []))
+        verify = {
+            'image_id': new_id,
+            'leds': (meta.get('states') or {}).get('leds'),
+            'slots': verify_slots,
+            'ok': bool(verify_slots) and all(s['ok'] for s in verify_slots),
+        }
+        (root / 'batches' / b_coff / 'coff_verify.json').write_text(
+            json.dumps(verify, indent=2, ensure_ascii=False) + '\n', encoding='utf-8'
+        )
+        if not verify['ok']:
+            print(f'C2.2 WARNING: C s8 replace camera check FAILED: {verify}', flush=True)
+        else:
+            update_excluded_after_coff_replace(
+                root,
+                old_id='c2_20261011_b3_rare_C_d1p2_s8_0009',
+                new_id=new_id,
+                verify=verify,
+            )
+            print(f'C2.2 coff replace OK → {new_id}; excluded updated', flush=True)
+
+        # tiers + coverage (no aug)
+        migrate_box_tier_sidecars(root)
+        all_mans: list[dict[str, Any]] = []
+        for mp in sorted((root / 'batches').glob('*/batch_manifest.json')):
+            all_mans.append(json.loads(mp.read_text(encoding='utf-8')))
+        write_overview(root, all_mans, round_id=f'{rid}_c22')
+        # also write this-round-only overview
+        round_path = root / 'manifests' / 'c22_overview.json'
+        round_path.write_text(
+            json.dumps(
+                {
+                    'schema': 'vision_5b_c22_overview_v1',
+                    'round': 'C2.2',
+                    'new_batches': batch_mans,
+                    'n_new_frames': sum(m['n_frames'] for m in batch_mans),
+                    'coff_verify': verify,
+                    'claims': {
+                        'yolo_trained': False,
+                        'formal_test_frozen': False,
+                        'dataset_ready_90pct': False,
+                        'trainable_pack': False,
+                    },
+                    'created_at': _now_iso(),
+                },
+                indent=2,
+                ensure_ascii=False,
+            )
+            + '\n',
+            encoding='utf-8',
+        )
+        metas = _iter_metas(root)
+        excl = excluded_ids(root)
+        cov = coverage_gaps(metas, excluded=excl)
+        spot = spot_check_c2(root, rules)
+        write_coverage_md(root, cov, spot)
+        return {
+            'new_batches': {m['batch_id']: m['n_frames'] for m in batch_mans},
+            'coff_verify': verify,
+            'coverage': {
+                'on_disk': cov['spec6_rollup']['total_images_on_disk'],
+                'credited': cov['spec6_rollup']['total_images_credited'],
+                'gaps_remaining': cov['gaps_remaining'],
+                'priority': [
+                    g
+                    for g in cov['checklist_gaps']
+                    if g['id'] in ('N-A1', 'N-B1', 'D-10', 'D-15')
+                ],
+            },
+            'spot_ok': spot['ok'],
+            'review_passed': cov['spec6_rollup'].get('boxes_review_passed'),
+        }
+    finally:
+        cam.close()
+
+
 def c21_export_candidate_overlays(root: Path, rules: dict[str, Any]) -> dict[str, Any]:
     """Export overlays for every boxes_candidate raw frame (excl. excluded_frames)."""
     excl = excluded_ids(root)
@@ -1240,6 +1432,11 @@ def main(argv: list[str] | None = None) -> int:
         action='store_true',
         help='Apply manifests/review_passed_image_ids.* onto sidecars + refresh coverage',
     )
+    p.add_argument(
+        '--c22-fill-gaps',
+        action='store_true',
+        help='C2.2: new batch_ids fill N-A1/N-B1/D-10/D-15 + replace C s8; no --force wipe',
+    )
     p.add_argument('--repair-manifest', default='', help='Rebuild batch_manifest from pngs')
     p.add_argument('--aug-batch-id', default='', help='New aug batch_id (default c2_<day>_b4_aug_v2)')
     p.add_argument('--aug-seed', type=int, default=42)
@@ -1254,6 +1451,14 @@ def main(argv: list[str] | None = None) -> int:
         man = repair_batch_manifest(root, args.repair_manifest)
         print(json.dumps({'repaired': man['batch_id'], 'n': man['n_frames']}, indent=2))
         return 0
+
+    if args.c22_fill_gaps:
+        if args.force:
+            print('C2.2 refuses --force (must not wipe prior evidence)', file=sys.stderr)
+            return 3
+        r = c22_fill_gaps(root, rules, settle_s=args.settle, run_id=rid)
+        print(json.dumps(r, indent=2, ensure_ascii=False))
+        return 0 if r.get('coff_verify', {}).get('ok') and r.get('spot_ok') else 2
 
     if args.c21_export_overlays:
         r = c21_export_candidate_overlays(root, rules)
