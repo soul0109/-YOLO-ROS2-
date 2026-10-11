@@ -1,0 +1,65 @@
+# R1 ROI rules for 1.2 m head-on D1 frames (640x480).
+# YOLO finds regions later; here ROIs are fixed fractions / pixel boxes for offline smoke.
+# Status enums (do not expand): led green|red|yellow|off ; panel lit|dark ; leak fixed_fail|none
+# Verdict: PASS | FAIL | UNKNOWN (UNKNOWN ≠ FAIL)
+
+schema: roi_rules_v1
+image_size: [640, 480]
+
+# Pixel boxes for current D1 camera geometry (calibrated on vision_d1_seed42).
+rois:
+  led_row_y: [2, 45]
+  # image-left → image-right slots (NOT model led_1..3 order)
+  led_slots_x:
+    - [182, 229]
+    - [297, 342]
+    - [410, 457]
+  panel: [240, 90, 400, 160]   # x0,y0,x1,y1
+  leak_floor: [240, 300, 400, 400]
+
+# A/B face -Y → image-left ≈ model led_3; C faces +Y → image-left ≈ led_1
+led_image_to_model:
+  face_neg_y: [2, 1, 0]   # slot_i → leds[index]
+  face_pos_y: [0, 1, 2]
+
+led:
+  bright_vmax_min: 160          # pixel max-channel to count as "lit sample"
+  min_bright_pixels: 80
+  # BGR means on bright pixels (Gazebo emissive primaries are nearly pure)
+  red: {r_min: 150, r_over_g: 40, r_over_b: 40}
+  green: {g_min: 150, g_over_r: 40, g_over_b: 40}
+  yellow: {r_min: 150, g_min: 150, b_max: 80, rg_abs_max: 40}
+  "off": {v90_max: 80, mean_vmax_max: 60}
+  # If bright but matches no color → UNKNOWN
+
+panel:
+  # mean Value (HSV V) inside panel ROI
+  lit_v_min: 120
+  dark_v_max: 40
+  # between → UNKNOWN
+
+leak:
+  # OpenCV HSV cyan/teal band for standardized leak patch
+  hsv_low: [80, 40, 80]
+  hsv_high: [110, 255, 255]
+  fail_frac_min: 0.05     # ≥ → fixed_fail
+  none_frac_max: 0.01     # ≤ → none
+  # between → UNKNOWN
+
+# Station-level inspection mapping (for report only; per-object statuses remain primary)
+inspection:
+  led_pass_color: green          # any non-green led → component FAIL
+  panel_pass_state: lit          # dark → FAIL (spec: 有显示=PASS, 黑屏=FAIL)
+  leak_pass_state: none          # fixed_fail → FAIL
+
+# UNKNOWN counterexample conventions (not a test framework)
+unknown_cases:
+  - id: U_panel_ambiguous
+    how: "panel mean V between dark_v_max and lit_v_min"
+    expect: panel=UNKNOWN
+  - id: U_leak_ambiguous
+    how: "leak cyan frac between none_frac_max and fail_frac_min"
+    expect: leak=UNKNOWN
+  - id: U_led_no_color
+    how: "LED slot bright but BGR matches no red/green/yellow/off rule"
+    expect: led=UNKNOWN
