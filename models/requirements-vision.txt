@@ -1,0 +1,6 @@
+# Vision runtime pins for Humble + cv_bridge (VM user install).
+# Prefer: python3 -m pip install --user -i https://pypi.tuna.tsinghua.edu.cn/simple -r models/requirements-vision.txt
+numpy>=1.23,<2
+ultralytics>=8.3,<9
+# Install torch/torchvision separately (CPU wheels). Do NOT install opencv-python
+# if it would shadow apt python3-opencv and break cv_bridge.

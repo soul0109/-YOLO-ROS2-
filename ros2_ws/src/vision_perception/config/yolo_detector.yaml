@@ -3,8 +3,8 @@ yolo_detector:
     image_topic: /camera/image_raw
     detections_topic: /vision/detections
     annotated_topic: /vision/annotated
-    # Set to a local .pt/.onnx file to enable Ultralytics inference.
-    model_path: ''
+    # M1 smoke: Ultralytics yolov8n (COCO). Local file; see models/README.md.
+    model_path: '/home/charles/inspection-robot/models/weights/yolov8n.pt'
     confidence_threshold: 0.25
     iou_threshold: 0.45
     device: cpu
