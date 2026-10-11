@@ -69,10 +69,11 @@ LED_MAT = {
         'emissive': '1 1 0 1',
     },
     'off': {
-        # Near-black, no emissive — must read as unlit vs green/red/yellow.
+        # Near-black. Gazebo Classic: MUST set emissive explicitly to 0 —
+        # omitting <emissive> leaves the previous model's glow (C-off false green).
         'ambient': '0.02 0.02 0.02 1',
         'diffuse': '0.04 0.04 0.04 1',
-        'emissive': None,
+        'emissive': '0 0 0 1',
     },
 }
 
@@ -85,7 +86,8 @@ PANEL_MAT = {
     'dark': {
         'ambient': '0.05 0.05 0.08 1',
         'diffuse': '0.08 0.08 0.12 1',
-        'emissive': None,
+        # Same rule as LED off: explicit zero emissive on respawn.
+        'emissive': '0 0 0 1',
     },
 }
 
@@ -175,13 +177,13 @@ def write_gt(path: Path, gt: dict[str, Any]) -> None:
 
 
 def _material_xml(mat: dict[str, Any]) -> str:
-    parts = [
-        f"<ambient>{mat['ambient']}</ambient>",
-        f"<diffuse>{mat['diffuse']}</diffuse>",
-    ]
-    if mat.get('emissive'):
-        parts.append(f"<emissive>{mat['emissive']}</emissive>")
-    return ''.join(parts)
+    # Always emit <emissive>. Omitting it does not clear prior glow in Gazebo Classic.
+    emissive = mat.get('emissive') or '0 0 0 1'
+    return (
+        f"<ambient>{mat['ambient']}</ambient>"
+        f"<diffuse>{mat['diffuse']}</diffuse>"
+        f"<emissive>{emissive}</emissive>"
+    )
 
 
 def led_model_xml(name: str, pose: tuple[float, ...], state: str) -> str:

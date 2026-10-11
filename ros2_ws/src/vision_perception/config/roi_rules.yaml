@@ -2,6 +2,10 @@
 # YOLO finds regions later; here ROIs are fixed fractions / pixel boxes for offline smoke.
 # Status enums (do not expand): led green|red|yellow|off ; panel lit|dark ; leak fixed_fail|none
 # Verdict: PASS | FAIL | UNKNOWN (UNKNOWN ≠ FAIL)
+#
+# schema = interface/protocol version (copied to Decision.roi_rules_version).
+# Content changes (e.g. rel_to_row_max, thresholds) do NOT require bumping schema;
+# authoritative content = this file in git (optional file hash later).
 
 schema: roi_rules_v1
 image_size: [640, 480]
@@ -29,7 +33,10 @@ led:
   red: {r_min: 150, r_over_g: 40, r_over_b: 40}
   green: {g_min: 150, g_over_r: 40, g_over_b: 40}
   yellow: {r_min: 150, g_min: 150, b_max: 80, rg_abs_max: 40}
-  "off": {v90_max: 80, mean_vmax_max: 60}
+  # Absolute darkness (primary after material fix: off must set emissive 0 0 0 1)
+  "off": {v90_max: 90, mean_vmax_max: 70}
+  # Belt vs bloom: mean_vmax / max(row mean_vmax) ≤ this → off (does not demote equal greens)
+  rel_to_row_max: 0.40
   # If bright but matches no color → UNKNOWN
 
 panel:

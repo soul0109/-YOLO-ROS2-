@@ -324,7 +324,7 @@
     </model>
 
     <!-- ═══════════════ 柜位视觉资产 W1（选项 A 默认静态布局；漏液固定不随机）═══════════════ -->
-    <!-- 材质约定：灯 green/red/yellow=有 emissive；off=暗色无 emissive。面板 lit=有 emissive；dark=无。 -->
+    <!-- 材质约定：灯 green/red/yellow=有色 emissive；off/dark 必须显式 emissive=0 0 0 1（省略会残留旧发光）。 -->
     <!-- 布局：灯一排在上 z≈0.52；面板在下 z≈0.32（高 0.15→顶≈0.395），中间留空，避免与灯重叠。 -->
     <!-- GT 粗态：A leds=[green,green,off] panel=dark leak=none；B=[green,green,red] lit + 固定漏液；C=[green,green,yellow] dark -->
 
@@ -356,11 +356,11 @@
       </visual></link>
     </model>
     <model name="cabinet_a_led_3">
-      <!-- state: off（无 emissive） -->
+      <!-- state: off（显式零 emissive） -->
       <pose>3.35 0.560 0.52 1.5708 0 0</pose>
       <static>true</static>
       <link name="link"><visual name="visual"><geometry><cylinder><radius>0.04</radius><length>0.02</length></cylinder></geometry>
-        <material><ambient>0.02 0.02 0.02 1</ambient><diffuse>0.04 0.04 0.04 1</diffuse></material>
+        <material><ambient>0.02 0.02 0.02 1</ambient><diffuse>0.04 0.04 0.04 1</diffuse><emissive>0 0 0 1</emissive></material>
       </visual></link>
     </model>
     <model name="cabinet_a_panel">
@@ -368,7 +368,7 @@
       <pose>3.15 0.555 0.32 0 0 0</pose>
       <static>true</static>
       <link name="link"><visual name="visual"><geometry><box><size>0.30 0.01 0.15</size></box></geometry>
-        <material><ambient>0.05 0.05 0.08 1</ambient><diffuse>0.08 0.08 0.12 1</diffuse></material>
+        <material><ambient>0.05 0.05 0.08 1</ambient><diffuse>0.08 0.08 0.12 1</diffuse><emissive>0 0 0 1</emissive></material>
       </visual></link>
     </model>
 
@@ -462,11 +462,11 @@
       </visual></link>
     </model>
     <model name="cabinet_c_panel">
-      <!-- state: dark · 屏在灯下方 -->
+      <!-- state: dark · 屏在灯下方（显式零 emissive） -->
       <pose>5.25 5.445 0.32 0 0 0</pose>
       <static>true</static>
       <link name="link"><visual name="visual"><geometry><box><size>0.30 0.01 0.15</size></box></geometry>
-        <material><ambient>0.05 0.05 0.08 1</ambient><diffuse>0.08 0.08 0.12 1</diffuse></material>
+        <material><ambient>0.05 0.05 0.08 1</ambient><diffuse>0.08 0.08 0.12 1</diffuse><emissive>0 0 0 1</emissive></material>
       </visual></link>
     </model>
 

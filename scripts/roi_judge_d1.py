@@ -47,21 +47,22 @@ def classify_led(patch_bgr: np.ndarray, cfg: dict[str, Any]) -> tuple[str, dict[
     vmax = patch_bgr.max(axis=2)
     v90 = float(np.percentile(vmax, 90))
     mean_vmax = float(vmax.mean())
+    base = {'v90': round(v90, 1), 'mean_vmax': round(mean_vmax, 1)}
     off = cfg['off']
     if v90 <= off['v90_max'] and mean_vmax <= off['mean_vmax_max']:
-        return 'off', {'v90': v90, 'mean_vmax': mean_vmax}
+        return 'off', base
 
     bright = vmax >= cfg['bright_vmax_min']
     if int(bright.sum()) < cfg['min_bright_pixels']:
         return 'UNKNOWN', {
+            **base,
             'reason': 'too_few_bright_pixels',
             'bright': int(bright.sum()),
-            'v90': v90,
         }
 
     sel = patch_bgr[bright]
     b, g, r = [float(x) for x in sel.mean(axis=0)]
-    detail = {'bgr': [round(b, 1), round(g, 1), round(r, 1)], 'v90': round(v90, 1)}
+    detail = {**base, 'bgr': [round(b, 1), round(g, 1), round(r, 1)]}
 
     red = cfg['red']
     if r >= red['r_min'] and (r - g) >= red['r_over_g'] and (r - b) >= red['r_over_b']:
@@ -130,9 +131,10 @@ def judge_image(
 
     led_states: list[str | None] = [None, None, None]
     led_debug: list[dict[str, Any]] = []
+    led_cfg = rules['led']
     for slot_i, (x0, x1) in enumerate(rois['led_slots_x']):
         patch = bgr[y0:y1, x0:x1]
-        state, detail = classify_led(patch, rules['led'])
+        state, detail = classify_led(patch, led_cfg)
         model_i = order[slot_i]
         led_states[model_i] = state
         led_debug.append(
@@ -143,6 +145,26 @@ def judge_image(
                 'detail': detail,
             }
         )
+
+    # Relative brightness belt (C-off): dim vs brightest sibling → off.
+    # Does not demote a full row of equal greens (ratio ≈ 1).
+    rel_max = float(led_cfg.get('rel_to_row_max', 0.0) or 0.0)
+    if rel_max > 0:
+        means = []
+        for d in led_debug:
+            mv = d['detail'].get('mean_vmax')
+            if mv is None:
+                mv = d['detail'].get('v90', 0.0)
+            means.append(float(mv))
+        row_max = max(means) if means else 0.0
+        if row_max > 0:
+            for d, mv in zip(led_debug, means):
+                ratio = mv / row_max
+                d['detail']['rel_to_row_max'] = round(ratio, 3)
+                if d['state'] != 'off' and ratio <= rel_max:
+                    d['detail']['rel_off_override'] = True
+                    d['state'] = 'off'
+                    led_states[d['model_index']] = 'off'
 
     panel_state, panel_detail = classify_panel(
         _clip_box(bgr, rois['panel']), rules['panel']
