@@ -7,6 +7,7 @@ Decision — never read fixed pixel coordinates. Fake detector_box fixture ≠ Y
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
@@ -201,6 +202,33 @@ def decide_one(bgr: np.ndarray, req: RoiRequest, rules: dict[str, Any]) -> Decis
     raise ValueError(f'unsupported object_type: {req.object_type}')
 
 
+def _finite_brightness(value: Any) -> float | None:
+    """Parse a brightness number; reject None / non-numeric / NaN / ±inf."""
+    if value is None:
+        return None
+    try:
+        v = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(v):
+        return None
+    return v
+
+
+def _slot_brightness(detail: dict[str, Any]) -> float | None:
+    """Return measured brightness, or None if measurement is absent/invalid.
+
+    Distinguishes key absence from an explicit 0.0. Prefer mean_vmax when the
+    key exists (even if 0.0); only if mean_vmax is absent fall back to v90.
+    Do not invent a brightness when both are missing.
+    """
+    if 'mean_vmax' in detail:
+        return _finite_brightness(detail['mean_vmax'])
+    if 'v90' in detail:
+        return _finite_brightness(detail['v90'])
+    return None
+
+
 def _rollup_leds(
     slot_states: list[str],
     slot_details: list[dict[str, Any]],
@@ -210,15 +238,24 @@ def _rollup_leds(
 ) -> Decision:
     """Three slots → one indicator_light Decision (station rollup)."""
     led_cfg = rules['led']
-    # Relative brightness belt (same as roi_judge_d1).
+    # Relative brightness belt (same intent as roi_judge_d1), but:
+    # - missing/invalid measurements do not become 0.0
+    # - UNKNOWN is never rewritten to off by the belt
     rel_max = float(led_cfg.get('rel_to_row_max', 0.0) or 0.0)
-    means = [float(d.get('mean_vmax', d.get('v90', 0.0))) for d in slot_details]
-    row_max = max(means) if means else 0.0
+    means = [_slot_brightness(d) for d in slot_details]
+    valid = [m for m in means if m is not None]
+    row_max = max(valid) if valid else None
     states = list(slot_states)
-    if rel_max > 0 and row_max > 0:
+    if rel_max > 0 and row_max is not None and row_max > 0:
         for i, mv in enumerate(means):
+            if mv is None:
+                # Missing/invalid: do not write ratio or override evidence.
+                continue
             ratio = mv / row_max
             slot_details[i]['rel_to_row_max'] = round(ratio, 3)
+            if states[i] == 'UNKNOWN':
+                # Measured-but-uncertain stays UNKNOWN; never force off.
+                continue
             if states[i] != 'off' and ratio <= rel_max:
                 slot_details[i]['rel_off_override'] = True
                 states[i] = 'off'
