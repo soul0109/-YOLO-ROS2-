@@ -4,7 +4,7 @@
 #
 # Usage:
 #   bash scripts/run_mission_full.sh          # start
-#   bash scripts/run_mission_full.sh stop     # stop web + runtime + launch
+#   bash scripts/run_mission_full.sh stop     # stop web + runtime + launch (precise)
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 # shellcheck disable=SC1091
@@ -12,21 +12,198 @@ source "$ROOT/scripts/mission_defaults.sh"
 
 cmd="${1:-start}"
 
+WORLD_MARKER="${ROOT}/ros2_ws/install/simulation_worlds/share/simulation_worlds/worlds/test_room.world"
+LAUNCH_MARKER='nav2_test_room.launch.py'
+RUNTIME_MARKER='mission_runtime_node'
+WEB_MARKER='uvicorn mission_api.app:app'
+
+# PIDs whose cmdline matches pattern (full cmdline via /proc).
+_pids_matching() {
+  local pat="$1"
+  local pid cmd
+  for pid in $(pgrep -f -- "$pat" 2>/dev/null || true); do
+    [[ -r "/proc/$pid/cmdline" ]] || continue
+    cmd="$(tr '\0' ' ' <"/proc/$pid/cmdline" 2>/dev/null || true)"
+    case "$cmd" in
+      *"$pat"*) printf '%s\n' "$pid" ;;
+    esac
+  done
+}
+
+# Only gzserver for THIS repo's test_room.world (never blanket killall gzserver).
+_pids_repo_gzserver() {
+  local pid cmd
+  for pid in $(pgrep -x gzserver 2>/dev/null || true); do
+    [[ -r "/proc/$pid/cmdline" ]] || continue
+    cmd="$(tr '\0' ' ' <"/proc/$pid/cmdline" 2>/dev/null || true)"
+    case "$cmd" in
+      *"${WORLD_MARKER}"*|*"${ROOT}/ros2_ws/src/simulation_worlds/worlds/test_room.world"*)
+        printf '%s\n' "$pid"
+        ;;
+    esac
+  done
+}
+
+# Descendants of a PID (BFS via pgrep -P).
+_pids_descendants() {
+  local root="$1"
+  local -a queue=("$root")
+  local -A seen=()
+  local cur child
+  while ((${#queue[@]})); do
+    cur="${queue[0]}"
+    queue=("${queue[@]:1}")
+    [[ -n "${seen[$cur]:-}" ]] && continue
+    seen[$cur]=1
+    for child in $(pgrep -P "$cur" 2>/dev/null || true); do
+      printf '%s\n' "$child"
+      queue+=("$child")
+    done
+  done
+}
+
+_kill_pid_list() {
+  local sig="$1"
+  shift
+  local pid
+  for pid in "$@"; do
+    [[ -n "$pid" ]] || continue
+    kill "-$sig" "$pid" 2>/dev/null || true
+  done
+}
+
+_unique_pids() {
+  sort -u | grep -E '^[0-9]+$' || true
+}
+
+# Orphan nav helpers only if they still reference this repo path in cmdline
+# (cmd_vel_timeout from simulation_worlds). Never blanket-kill all nav2_*.
+_pids_repo_helpers_orphan() {
+  local pid cmd
+  for pid in $(pgrep -f -- 'cmd_vel_timeout.py' 2>/dev/null || true); do
+    [[ -r "/proc/$pid/cmdline" ]] || continue
+    cmd="$(tr '\0' ' ' <"/proc/$pid/cmdline" 2>/dev/null || true)"
+    case "$cmd" in
+      *"${ROOT}"*|*/simulation_worlds/lib/simulation_worlds/cmd_vel_timeout*)
+        printf '%s\n' "$pid"
+        ;;
+    esac
+  done
+}
+
+stack_remaining() {
+  {
+    _pids_matching "$LAUNCH_MARKER"
+    _pids_matching "$RUNTIME_MARKER"
+    _pids_matching "$WEB_MARKER"
+    _pids_repo_gzserver
+    _pids_repo_helpers_orphan
+  } | _unique_pids
+}
+
+print_stack_status() {
+  local rem
+  rem="$(stack_remaining | tr '\n' ' ')"
+  if [[ -z "${rem// }" ]]; then
+    echo "STACK_CLEAR"
+    return 0
+  fi
+  echo "STACK_DIRTY"
+  local pid
+  for pid in $rem; do
+    printf '  %s %s\n' "$pid" "$(tr '\0' ' ' <"/proc/$pid/cmdline" 2>/dev/null | cut -c1-160 || echo '?')"
+  done
+  return 1
+}
+
 stop_all() {
+  local wait_s="${STACK_STOP_WAIT_S:-25}"
+  local pid launch_pids runtime_pids web_pids tree_pids gz_pids orphan_pids all_pids
+
   bash "$ROOT/scripts/run_mission_web.sh" stop >/dev/null 2>&1 || true
+
   if [[ -f "$INSPECTION_RUNTIME_PID_FILE" ]]; then
-    kill "$(cat "$INSPECTION_RUNTIME_PID_FILE")" 2>/dev/null || true
+    pid="$(cat "$INSPECTION_RUNTIME_PID_FILE" 2>/dev/null || true)"
+    [[ -n "${pid:-}" ]] && kill "$pid" 2>/dev/null || true
     rm -f "$INSPECTION_RUNTIME_PID_FILE"
   fi
-  pkill -f 'mission_runtime_node' 2>/dev/null || true
-  if [[ -f "$INSPECTION_LAUNCH_PID_FILE" ]]; then
-    kill "$(cat "$INSPECTION_LAUNCH_PID_FILE")" 2>/dev/null || true
-    rm -f "$INSPECTION_LAUNCH_PID_FILE"
+
+  mapfile -t launch_pids < <(
+    {
+      [[ -f "$INSPECTION_LAUNCH_PID_FILE" ]] && cat "$INSPECTION_LAUNCH_PID_FILE" 2>/dev/null || true
+      _pids_matching "$LAUNCH_MARKER"
+    } | _unique_pids
+  )
+  rm -f "$INSPECTION_LAUNCH_PID_FILE"
+
+  # Snapshot launch descendants (nav2_*, gzserver, cmd_vel_timeout, …) before killing roots.
+  tree_pids=()
+  for pid in "${launch_pids[@]}"; do
+    mapfile -t -O "${#tree_pids[@]}" tree_pids < <(_pids_descendants "$pid")
+  done
+
+  mapfile -t runtime_pids < <(_pids_matching "$RUNTIME_MARKER" | _unique_pids)
+  mapfile -t web_pids < <(_pids_matching "$WEB_MARKER" | _unique_pids)
+  mapfile -t gz_pids < <(_pids_repo_gzserver | _unique_pids)
+
+  # Persist tree snapshot so STACK_CLEAR can see launch children still alive after root exit.
+  local tree_file="/tmp/inspection_mission_launch_tree.pids"
+  printf '%s\n' "${tree_pids[@]}" "${launch_pids[@]}" >"$tree_file"
+
+  _tree_survivors() {
+    local p
+    [[ -f "$tree_file" ]] || return 0
+    while read -r p; do
+      [[ -n "$p" && -d "/proc/$p" ]] && printf '%s\n' "$p"
+    done <"$tree_file"
+  }
+
+  # TERM roots + tree + repo-scoped gz/runtime/web (no killall / no foreign gzserver).
+  _kill_pid_list 15 "${launch_pids[@]}" "${tree_pids[@]}" "${runtime_pids[@]}" "${web_pids[@]}" "${gz_pids[@]}"
+
+  local deadline=$((SECONDS + wait_s))
+  while (( SECONDS < deadline )); do
+    mapfile -t all_pids < <({ stack_remaining; _tree_survivors; } | _unique_pids)
+    if ((${#all_pids[@]} == 0)); then
+      rm -f "$tree_file"
+      echo "stopped (web+runtime+launch+repo-gzserver)"
+      echo "STACK_CLEAR"
+      return 0
+    fi
+    sleep 1
+  done
+
+  mapfile -t all_pids < <(
+    {
+      stack_remaining
+      _tree_survivors
+      _pids_repo_gzserver
+      _pids_repo_helpers_orphan
+      for pid in "${launch_pids[@]}"; do _pids_descendants "$pid"; done
+    } | _unique_pids
+  )
+
+  if ((${#all_pids[@]})); then
+    echo "stop: escalating TERM→KILL for remaining repo stack PIDs: ${all_pids[*]}" >&2
+    _kill_pid_list 15 "${all_pids[@]}"
+    sleep 1
+    mapfile -t all_pids < <({ stack_remaining; _tree_survivors; _pids_repo_gzserver; } | _unique_pids)
+    _kill_pid_list 9 "${all_pids[@]}"
+    sleep 1
   fi
-  pkill -f 'nav2_test_room.launch.py' 2>/dev/null || true
-  # Leave gzserver cleanup to launch teardown; force if still up.
-  sleep 1
-  echo "stopped (web+runtime+launch signalled)"
+
+  echo "stopped (web+runtime+launch+repo-gzserver)"
+  mapfile -t all_pids < <({ stack_remaining; _tree_survivors; } | _unique_pids)
+  if ((${#all_pids[@]} == 0)); then
+    rm -f "$tree_file"
+    echo "STACK_CLEAR"
+  else
+    echo "STACK_DIRTY"
+    local p
+    for p in "${all_pids[@]}"; do
+      printf '  %s %s\n' "$p" "$(tr '\0' ' ' <"/proc/$p/cmdline" 2>/dev/null | cut -c1-160 || echo '?')"
+    done
+  fi
 }
 
 if [[ "$cmd" == "stop" ]]; then

@@ -52,3 +52,14 @@ bash ~/inspection-robot/scripts/yolo_m1_smoke.sh
 ```
 
 M2/5B 的场景测试集与 90% 口径另立，不在此提前展开。
+
+## 巡检候选权重 Train-1（2026-10-12 / 登记 2026-11-11）
+
+| 项 | 值 |
+|---|---|
+| 文件 | `weights/inspection_train1_20261012.pt` |
+| 来源 | `bags/vision_5b_c2/train1/weights/best.pt`（不重训） |
+| SHA256 | `a1d2507a6fe5fc9bae12e85f28fc3e876477b010b88640bb251d198ee023fed4` |
+| 候选清单 | `candidates/inspection_train1_20261012.candidate.json` |
+| 用途 | 正式 5B Test **候选**；开发 val ≠ 正式 Test；未出冻结 Test 报告前不宣称 90% |
+
