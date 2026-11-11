@@ -109,7 +109,8 @@ class TestM1T01Hook1LogicOnly(unittest.TestCase):
                 'inspection': {'led_pass_color': 'green'},
             }
         dec = _rollup_leds(states, details, ORDER_NEG_Y, rules, 'detector_box')
-        self.assertEqual(dec.verdict, 'UNKNOWN', msg=dec)
+        # V2-01: known red + miss → component FAIL; miss slot stays UNKNOWN.
+        self.assertEqual(dec.verdict, 'FAIL', msg=dec)
         self.assertEqual(dec.measurements['leds'], ['UNKNOWN', 'red', 'green'])
         miss_detail = next(
             s['detail']
@@ -195,7 +196,8 @@ class TestM1T01Hook1ModelRegression(unittest.TestCase):
     def test_historical_counterexample_if_miss_reproduced(self):
         row = next(r for r in self.results if r['image_id'] == HIST_ID)
         if 'indicator_light_slot_2' in row['missed']:
-            self.assertEqual(row['verdicts']['indicator_light'], 'UNKNOWN')
+            # V2-01: known red + miss → component FAIL; miss slot stays UNKNOWN.
+            self.assertEqual(row['verdicts']['indicator_light'], 'FAIL')
             leds = row['led']['leds']
             self.assertIn('UNKNOWN', leds)
             self.assertIn('red', leds)

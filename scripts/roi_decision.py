@@ -276,12 +276,16 @@ def _rollup_leds(
     leds = [model_leds[i] or 'UNKNOWN' for i in range(3)]
     insp = rules['inspection']
     verd_list = [_led_verdict(s, insp) for s in leds]
-    if 'UNKNOWN' in verd_list:
-        roll = 'UNKNOWN'
-        reason = 'led_unknown_in_slots'
-    elif 'FAIL' in verd_list:
+    # Component rollup: FAIL > UNKNOWN > PASS. Missing slots stay UNKNOWN
+    # in measurements; known red/yellow/off must not be masked by miss.
+    if 'FAIL' in verd_list:
         roll = 'FAIL'
         reason = f'led_non_green:{",".join(leds)}'
+        if 'UNKNOWN' in verd_list:
+            reason = f'{reason};incomplete'
+    elif 'UNKNOWN' in verd_list:
+        roll = 'UNKNOWN'
+        reason = 'led_unknown_in_slots'
     else:
         roll = 'PASS'
         reason = 'all_leds_green'

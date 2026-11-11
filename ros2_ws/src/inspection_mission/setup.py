@@ -21,6 +21,9 @@ setup(
     entry_points={
         'console_scripts': [
             'patrol_mission_node = inspection_mission.patrol_mission_node:main',
+            'mission_runtime_node = inspection_mission.mission_runtime_node:main',
+            'mission_archive_query = inspection_mission.mission_archive_cli:main',
+            'mission_safety_cli = inspection_mission.mission_safety_cli:main',
         ],
     },
 )

@@ -42,7 +42,7 @@ models/datasets/
 !models/**/.gitkeep
 !models/README.md
 
-# Runtime artifacts
+# Runtime artifacts (keep on disk; do not delete historical bags/)
 bags/
 *.bag
 *.db3
@@ -52,6 +52,8 @@ bags/
 rosbag2_*/
 assets/raw/
 .codegraph/
+runtime/
+log/
 
 # Gazebo / logs
 ~/.gazebo/

@@ -18,7 +18,7 @@ sys.path.insert(0, str(REPO / 'scripts'))
 
 from roi_decision import _rollup_leds  # noqa: E402
 
-# Minimal rules: keep rel belt + UNKNOWN-priority inspection mapping.
+# Minimal rules: keep rel belt + FAIL>UNKNOWN>PASS inspection mapping.
 RULES = {
     'schema': 'roi_rules_v1',
     'led': {'rel_to_row_max': 0.40},
@@ -52,8 +52,12 @@ def _rollup(states_details, order=ORDER_NEG_Y, rules=None):
 
 
 class TestRollupMissingVsZero(unittest.TestCase):
-    def test_01_green_red_miss_keeps_unknown_and_red(self):
-        """Historical bug pattern: miss coerced to 0.0 → rel_off → FAIL."""
+    def test_01_green_red_miss_keeps_fail_and_red(self):
+        """Known red + miss: component FAIL; miss stays UNKNOWN (never off).
+
+        V2-01: confirmed FAIL must not be masked by slot UNKNOWN. Historical
+        miss→0.0→rel_off coercion protection still required.
+        """
         dec, details = _rollup(
             [
                 _det('green', mean_vmax=191.6, v90=255.0),
@@ -61,8 +65,8 @@ class TestRollupMissingVsZero(unittest.TestCase):
                 _miss(2),
             ]
         )
-        self.assertEqual(dec.verdict, 'UNKNOWN')
-        self.assertEqual(dec.reason, 'led_unknown_in_slots')
+        self.assertEqual(dec.verdict, 'FAIL')
+        self.assertEqual(dec.reason, 'led_non_green:UNKNOWN,red,green;incomplete')
         # face_neg_y: image [green, red, UNKNOWN] → model [UNKNOWN, red, green]
         self.assertEqual(dec.measurements['leds'], ['UNKNOWN', 'red', 'green'])
         miss = details[2]
@@ -210,7 +214,10 @@ class TestRollupMissingVsZero(unittest.TestCase):
         self.assertNotIn('rel_to_row_max', details[0])
         self.assertNotIn('rel_to_row_max', details[2])
         self.assertEqual(details[1].get('rel_to_row_max'), 1.0)
-        self.assertEqual(dec.verdict, 'UNKNOWN')
+        # red present → component FAIL; miss slot still UNKNOWN (not off)
+        self.assertEqual(dec.verdict, 'FAIL')
+        self.assertEqual(dec.measurements['leds'][0], 'UNKNOWN')
+        self.assertNotIn('rel_off_override', details[2])
         # inf sibling must not poison
         _, details_inf = _rollup(
             [
@@ -245,8 +252,25 @@ class TestRollupMissingVsZero(unittest.TestCase):
             [(s['image_slot'], s['model_index'], s['state']) for s in slots_pos],
             [(0, 0, 'green'), (1, 1, 'red'), (2, 2, 'UNKNOWN')],
         )
-        self.assertEqual(dec_neg.verdict, 'UNKNOWN')
-        self.assertEqual(dec_pos.verdict, 'UNKNOWN')
+        # confirmed red → FAIL; mapping/miss protections unchanged
+        self.assertEqual(dec_neg.verdict, 'FAIL')
+        self.assertEqual(dec_pos.verdict, 'FAIL')
+
+    def test_12_yellow_or_off_with_miss_is_fail(self):
+        for bad in ('yellow', 'off'):
+            with self.subTest(bad=bad):
+                dec, details = _rollup(
+                    [
+                        _det('green', mean_vmax=180.0, v90=255.0),
+                        _det(bad, mean_vmax=40.0 if bad == 'off' else 190.0, v90=255.0),
+                        _miss(2),
+                    ]
+                )
+                self.assertEqual(dec.verdict, 'FAIL')
+                self.assertIn(bad, dec.measurements['leds'])
+                self.assertIn('UNKNOWN', dec.measurements['leds'])
+                self.assertNotIn('rel_off_override', details[2])
+                self.assertEqual(details[2].get('reason'), 'yolo_miss_led_slot')
 
     def test_historical_counterexample_event_shape(self):
         """Deterministic reconstruction of c2_20261011_s0_unk_B_U_leak_0007 LED rollup."""
@@ -258,7 +282,7 @@ class TestRollupMissingVsZero(unittest.TestCase):
             ],
             order=ORDER_NEG_Y,
         )
-        self.assertEqual(dec.verdict, 'UNKNOWN')
+        self.assertEqual(dec.verdict, 'FAIL')
         self.assertEqual(dec.measurements['leds'], ['UNKNOWN', 'red', 'green'])
         self.assertNotIn('rel_off_override', details[2])
         self.assertNotIn('rel_to_row_max', details[2])

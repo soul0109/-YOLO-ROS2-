@@ -1,0 +1,24 @@
+# Goal: inspection mission entry (R1 nav + R2 capture + R3 same-frame vision)
+string mission_id
+string route_id
+---
+# Result
+string mission_id
+string execution_status
+string error_code
+string message
+# R2 capture fields (empty when nav-only failure / cancel before capture)
+string screenshot_path
+string image_stamp
+string frame_id
+string station_id
+# R3 inspection fields (empty when capture not reached / vision not run)
+string inspection_status
+string station_result_path
+string model_version
+---
+# Feedback
+string mission_id
+string station_id
+string phase
+string message
