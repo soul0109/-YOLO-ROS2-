@@ -1,6 +1,9 @@
 # 2026-11-11 B2 正式视觉 Test 冻结与执行 REVIEW
 
-- **状态：** REVIEW
+> **评估器无效，已被本条目取代：** 见 [2026-11-11-B2正式视觉Test评估器修复与重跑REVIEW](2026-11-11-B2正式视觉Test评估器修复与重跑REVIEW.md)。  
+> 本条 `FORMAL_TEST` ~34.6% 因 harness bug（panel/leak 键名错误 + LED 图像槽/设备序混淆）判 **INVALID_HARNESS**；冻结 test/权重/ROI **仍有效**，不删原文。
+
+- **状态：** REVIEW（评估报告作废；采集/冻结事实保留）
 - **仓库：** `/home/charles/inspection-robot` · 批前 HEAD `fc411d5` = origin · tag `mvp-r7-console-20261111`
 - **证据：** `log/b2_vision_test_20261111/` · `bags/vision_5b_test_20261111/`（gitignore，磁盘保留）
 

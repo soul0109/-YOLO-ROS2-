@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
-"""Hash-gated formal vision Test runner (B2).
+"""Hash-gated formal vision Test runner (B2 / B2-fix).
 
-One-shot evaluation on a frozen test root. Refuses to run if candidate /
-ROI / freeze hashes mismatch, or if freeze marker is absent (unless --dry-run).
-
-Dry-run on soft/dev data MUST set report_tag=DRY_RUN_NOT_TEST.
+Uses Runtime `inspect_station_image` for predictions (model-order LEDs,
+measurements['panel']/['leak']). Refuses if candidate/ROI/freeze hashes
+mismatch. Sanity gate marks INVALID_REPORT on harness-class bugs.
 """
 
 from __future__ import annotations
@@ -13,31 +12,31 @@ import argparse
 import hashlib
 import json
 import platform
+import shutil
 import subprocess
 import sys
+import tempfile
 from collections import Counter, defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-import cv2
-import numpy as np
-
 SCRIPTS = Path(__file__).resolve().parent
 REPO = SCRIPTS.parent
 sys.path.insert(0, str(SCRIPTS))
+sys.path.insert(0, str(REPO / 'ros2_ws' / 'src' / 'inspection_mission'))
 
-from hook1_yolo_roi_e1 import (  # noqa: E402
-    CLASS_NAMES,
-    associate_led_slots,
-    decisions_from_yolo,
-    run_yolo,
+from inspection_mission.station_inspect import (  # noqa: E402
+    inspect_station_image,
 )
-from roi_decision import load_rules, rules_version  # noqa: E402
 
 DEFAULT_CANDIDATE = (
     REPO / 'models' / 'candidates' / 'inspection_train1_20261012.candidate.json'
 )
+STATION_INSPECT_PATH = (
+    REPO / 'ros2_ws' / 'src' / 'inspection_mission' / 'inspection_mission' / 'station_inspect.py'
+)
+ROI_DECISION_PATH = SCRIPTS / 'roi_decision.py'
 
 
 def sha256_file(path: Path) -> str:
@@ -150,12 +149,10 @@ def iter_frame_metas(root: Path, batch_ids: list[str] | None) -> list[tuple[Path
     return out
 
 
-def load_bgr(meta_path: Path, meta: dict[str, Any]) -> np.ndarray:
-    # states/<id>.json → images/<id>.png ; or sidecar next to png
+def resolve_png(meta_path: Path, meta: dict[str, Any]) -> Path:
     candidates: list[Path] = []
     fn = meta.get('file_name') or meta.get('image')
     if fn:
-        # states/ → batch dir
         candidates.append(meta_path.parent.parent / fn)
         candidates.append(meta_path.parent / Path(fn).name)
     candidates.append(meta_path.with_suffix('.png'))
@@ -164,10 +161,7 @@ def load_bgr(meta_path: Path, meta: dict[str, Any]) -> np.ndarray:
     png = next((p for p in candidates if p.is_file()), None)
     if png is None:
         raise FileNotFoundError(f"image for {meta.get('image_id')} from {meta_path}")
-    bgr = cv2.imread(str(png))
-    if bgr is None:
-        raise FileNotFoundError(png)
-    return bgr
+    return png
 
 
 def gt_object_states(meta: dict[str, Any]) -> dict[str, Any]:
@@ -182,182 +176,105 @@ def gt_object_states(meta: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def pred_object_states(
-    decisions: list[Any], meta: dict[str, Any], rules: dict[str, Any]
-) -> dict[str, Any]:
-    """Map Decision list → per-object state labels for agreement."""
-    from roi_judge_d1 import classify_leak, classify_led, classify_panel  # local
-
-    # decisions_from_yolo returns rollup Decision for leds + panel + leak objects.
-    # We need per-slot LED states from measurements when available.
-    leds = ['UNKNOWN', 'UNKNOWN', 'UNKNOWN']
-    panel = 'UNKNOWN'
-    leak = 'UNKNOWN'
-    for d in decisions:
-        ot = d.object_type
-        m = d.measurements or {}
-        if ot == 'indicator_light':
-            # Prefer per-slot states if present
-            slot_states = m.get('slot_states') or m.get('led_states')
-            if isinstance(slot_states, list) and len(slot_states) >= 3:
-                leds = [str(x) for x in slot_states[:3]]
-            elif 'led_state' in m:
-                # single — leave UNKNOWN slots (miss already encoded)
-                pass
-            # recover from nested details
-            details = m.get('slot_details') or []
-            if details and len(details) >= 3:
-                recovered = []
-                for det in details[:3]:
-                    if isinstance(det, dict) and 'led_state' in det:
-                        recovered.append(str(det['led_state']))
-                    elif isinstance(det, dict) and det.get('reason', '').startswith('yolo_miss'):
-                        recovered.append('UNKNOWN')
-                    else:
-                        recovered.append('UNKNOWN')
-                if any(x != 'UNKNOWN' for x in recovered) or all(
-                    isinstance(det, dict) and 'reason' in det for det in details[:3]
-                ):
-                    leds = recovered
-        elif ot == 'panel':
-            panel = str(m.get('panel_state') or ('UNKNOWN' if d.verdict == 'UNKNOWN' else d.verdict))
-            if panel in ('PASS', 'FAIL'):
-                # map verdict back if state missing
-                panel = 'lit' if d.verdict == 'PASS' else ('dark' if d.verdict == 'FAIL' else 'UNKNOWN')
-            if 'panel_state' in m:
-                panel = str(m['panel_state'])
-        elif ot == 'inspection_region':
-            if 'leak_state' in m:
-                leak = str(m['leak_state'])
-            elif d.verdict == 'PASS':
-                leak = 'none'
-            elif d.verdict == 'FAIL':
-                leak = 'fixed_fail'
-            else:
-                leak = 'UNKNOWN'
-    # Fallback: if LED rollup stored states differently, try slot_details on led decision
-    for d in decisions:
-        if d.object_type != 'indicator_light':
-            continue
-        m = d.measurements or {}
-        if m.get('slot_states'):
-            leds = [str(x) for x in m['slot_states'][:3]]
-        elif m.get('per_slot'):
-            leds = [str(x.get('led_state', 'UNKNOWN')) for x in m['per_slot'][:3]]
-    _ = (classify_leak, classify_led, classify_panel, rules, meta)  # lint keep
-    return {'leds': leds, 'panel': panel, 'leak': leak}
+def _panel_from_verdict(verdict: str) -> str:
+    v = str(verdict or '').strip()
+    if v == 'PASS':
+        return 'lit'
+    if v == 'FAIL':
+        return 'dark'
+    return 'UNKNOWN'
 
 
-def extract_pred_states_from_yolo_path(
-    bgr: np.ndarray,
-    meta: dict[str, Any],
-    rules: dict[str, Any],
-    dets: list[dict[str, Any]],
-    model_version: str,
-) -> tuple[dict[str, Any], list[Any], dict[str, Any]]:
-    """Replicate Runtime-like path but return per-slot LED states explicitly."""
-    from roi_decision import Decision, RoiRequest, decide_one, led_slot_order, _rollup_leds
+def _leak_from_verdict(verdict: str) -> str:
+    v = str(verdict or '').strip()
+    if v == 'PASS':
+        return 'none'
+    if v == 'FAIL':
+        return 'fixed_fail'
+    return 'UNKNOWN'
 
-    by_cls: dict[str, list[dict[str, Any]]] = {c: [] for c in CLASS_NAMES}
-    for d in dets:
-        by_cls[d['class_name']].append(d)
-    for c in CLASS_NAMES:
-        by_cls[c].sort(key=lambda x: -x['confidence'])
 
-    miss: dict[str, Any] = {'model_version': model_version, 'missed': []}
-    slots = associate_led_slots(by_cls['indicator_light'], rules)
-    order = led_slot_order(float(meta['robot_pose']['yaw']), rules)
-    slot_states: list[str] = []
-    slot_details: list[dict[str, Any]] = []
-    for i, det in enumerate(slots):
-        if det is None:
-            slot_states.append('UNKNOWN')
-            slot_details.append({'reason': 'yolo_miss_led_slot', 'slot_i': i})
-            miss['missed'].append(f'indicator_light_slot_{i}')
-            continue
-        d = decide_one(
-            bgr,
-            RoiRequest(
-                roi_source='detector_box',
-                object_type='indicator_light',
-                bbox_xyxy=tuple(det['bbox_xyxy']),  # type: ignore[arg-type]
-                confidence=det['confidence'],
-            ),
-            rules,
-        )
-        slot_states.append(str(d.measurements.get('led_state', 'UNKNOWN')))
-        slot_details.append(dict(d.measurements))
+def states_from_inspect_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    """Extract model-order LED / panel / leak states from Runtime payload."""
+    objs = payload.get('objects') or {}
+    led_obj = objs.get('leds') or {}
+    panel_obj = objs.get('panel') or {}
+    leak_obj = objs.get('leak') or {}
 
-    led_dec = _rollup_leds(slot_states, slot_details, order, rules, 'detector_box')
-    led_dec.measurements['slot_states'] = list(slot_states)
-    decisions: list[Any] = [led_dec]
-
-    panel_state = 'UNKNOWN'
-    panel_cands = by_cls['panel']
-    if not panel_cands:
-        miss['missed'].append('panel')
-        decisions.append(
-            Decision(
-                object_type='panel',
-                verdict='UNKNOWN',
-                reason='yolo_miss_panel',
-                roi_source='detector_box',
-                roi_rules_version=rules_version(rules),
-                measurements={'miss': True, 'panel_state': 'UNKNOWN'},
-            )
-        )
+    leds_raw = led_obj.get('model_states')
+    if not isinstance(leds_raw, list) or len(leds_raw) < 3:
+        # Fallback: rebuild from image_slots via model_index (still Runtime fields)
+        slots = led_obj.get('image_slots') or []
+        leds = ['UNKNOWN', 'UNKNOWN', 'UNKNOWN']
+        for slot in slots:
+            if not isinstance(slot, dict):
+                continue
+            mi = slot.get('model_index')
+            if mi is None:
+                continue
+            mi = int(mi)
+            if 0 <= mi < 3:
+                leds[mi] = str(slot.get('state', 'UNKNOWN'))
     else:
-        det = panel_cands[0]
-        d = decide_one(
-            bgr,
-            RoiRequest(
-                roi_source='detector_box',
-                object_type='panel',
-                bbox_xyxy=tuple(det['bbox_xyxy']),  # type: ignore[arg-type]
-                confidence=det['confidence'],
-            ),
-            rules,
-        )
-        panel_state = str(d.measurements.get('panel_state', 'UNKNOWN'))
-        d.measurements['panel_state'] = panel_state
-        decisions.append(d)
+        leds = [str(x) for x in leds_raw[:3]]
 
-    leak_state = 'UNKNOWN'
-    leak_cands = by_cls['inspection_region']
-    if not leak_cands:
-        miss['missed'].append('inspection_region')
-        decisions.append(
-            Decision(
-                object_type='inspection_region',
-                verdict='UNKNOWN',
-                reason='yolo_miss_inspection_region',
-                roi_source='detector_box',
-                roi_rules_version=rules_version(rules),
-                measurements={'miss': True, 'leak_state': 'UNKNOWN'},
-            )
-        )
+    panel = panel_obj.get('state')
+    if panel is None:
+        panel = _panel_from_verdict(panel_obj.get('verdict', 'UNKNOWN'))
     else:
-        det = leak_cands[0]
-        d = decide_one(
-            bgr,
-            RoiRequest(
-                roi_source='detector_box',
-                object_type='inspection_region',
-                bbox_xyxy=tuple(det['bbox_xyxy']),  # type: ignore[arg-type]
-                confidence=det['confidence'],
-            ),
-            rules,
-        )
-        leak_state = str(d.measurements.get('leak_state', 'UNKNOWN'))
-        d.measurements['leak_state'] = leak_state
-        decisions.append(d)
+        panel = str(panel)
 
-    pred = {'leds': slot_states, 'panel': panel_state, 'leak': leak_state}
-    return pred, decisions, miss
+    leak = leak_obj.get('state')
+    if leak is None:
+        leak = _leak_from_verdict(leak_obj.get('verdict', 'UNKNOWN'))
+    else:
+        leak = str(leak)
+
+    return {
+        'leds': leds,
+        'panel': panel,
+        'leak': leak,
+        'slot_contract': led_obj.get('slot_contract'),
+        'inspection_status': payload.get('inspection_status'),
+    }
+
+
+def predict_via_runtime(
+    *,
+    png: Path,
+    station_id: str,
+    robot_yaw: float,
+    weights: Path,
+    rules_path: Path,
+    conf: float,
+    image_stamp: str = '0',
+    mission_id: str = 'formal_harness',
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Call Runtime inspect_station_image on a temp copy (no pollution of bags/)."""
+    with tempfile.TemporaryDirectory(prefix='formal_vision_') as td:
+        tmp = Path(td) / 'shot.png'
+        shutil.copy2(png, tmp)
+        result = inspect_station_image(
+            screenshot_path=tmp,
+            mission_id=mission_id,
+            station_id=station_id,
+            image_stamp=image_stamp,
+            robot_yaw=float(robot_yaw),
+            weights=weights,
+            rules_path=rules_path,
+            conf=float(conf),
+            write_annotated=False,
+        )
+        if not result.ok:
+            raise RuntimeError(
+                f'inspect_station_image failed: {result.error_code}: {result.message}'
+            )
+        payload = dict(result.payload)
+    return states_from_inspect_payload(payload), payload
 
 
 def station_rollup(states: dict[str, Any]) -> str:
-    """PASS if all components pass; UNKNOWN if any UNKNOWN; else FAIL."""
+    """Match Runtime priority: FAIL > UNKNOWN > PASS on component verdicts."""
     leds = states['leds']
     panel = states['panel']
     leak = states['leak']
@@ -380,17 +297,16 @@ def station_rollup(states: dict[str, Any]) -> str:
         parts.append('PASS')
     else:
         parts.append('FAIL')
-    if 'UNKNOWN' in parts:
-        return 'UNKNOWN'
     if 'FAIL' in parts:
         return 'FAIL'
+    if 'UNKNOWN' in parts:
+        return 'UNKNOWN'
     return 'PASS'
 
 
 def agreement_units(
     gt: dict[str, Any], pred: dict[str, Any]
 ) -> list[tuple[str, str, str, bool]]:
-    """Per-object units: 3 LED slots + panel + leak. UNKNOWN-in-denominator."""
     units: list[tuple[str, str, str, bool]] = []
     for i in range(3):
         g, p = gt['leds'][i], pred['leds'][i]
@@ -400,21 +316,127 @@ def agreement_units(
     return units
 
 
+def sanity_gate(
+    report: dict[str, Any],
+    per_frame: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Detect harness-class bugs. Returns {ok, issues, report_tag_override?}."""
+    issues: list[str] = []
+    by_object = (report.get('metrics') or {}).get('by_object') or {}
+    confusion = report.get('confusion') or {}
+
+    for name, stats in by_object.items():
+        total = int(stats.get('total') or 0)
+        correct = int(stats.get('correct') or 0)
+        if total > 0 and correct == 0:
+            issues.append(f'{name}: correct==0 with total={total}')
+
+    # All predictions UNKNOWN while non-UNKNOWN GT exists (per object class)
+    if per_frame:
+        for obj in ('led_0', 'led_1', 'led_2', 'panel', 'leak'):
+            preds: set[str] = set()
+            gts: set[str] = set()
+            for rec in per_frame:
+                gt = rec.get('gt') or {}
+                pred = rec.get('pred') or {}
+                if obj.startswith('led_'):
+                    idx = int(obj.split('_')[1])
+                    g = (gt.get('leds') or ['UNKNOWN'] * 3)[idx]
+                    p = (pred.get('leds') or ['UNKNOWN'] * 3)[idx]
+                else:
+                    g = gt.get(obj, 'UNKNOWN')
+                    p = pred.get(obj, 'UNKNOWN')
+                gts.add(str(g))
+                preds.add(str(p))
+            if gts - {'UNKNOWN'} and preds == {'UNKNOWN'}:
+                issues.append(
+                    f'{obj}: all predictions UNKNOWN while non-UNKNOWN GT exists'
+                )
+    else:
+        for name, conf in confusion.items():
+            preds: set[str] = set()
+            has_non_unk_gt = False
+            for key in conf:
+                if '->' not in key:
+                    continue
+                g, p = key.split('->', 1)
+                preds.add(p)
+                if g != 'UNKNOWN':
+                    has_non_unk_gt = True
+            if has_non_unk_gt and preds == {'UNKNOWN'}:
+                issues.append(
+                    f'{name}: all predictions UNKNOWN while non-UNKNOWN GT exists'
+                )
+
+    metrics = report.get('metrics') or {}
+    unk_agr = metrics.get('unknown_gt_agreement')
+    unk_total = int(metrics.get('unknown_gt_total') or 0)
+    if unk_agr is not None and float(unk_agr) >= 1.0 - 1e-12 and unk_total > 0:
+        non_ok = 0
+        non_n = 0
+        for conf in confusion.values():
+            for key, n in conf.items():
+                if '->' not in key:
+                    continue
+                g, p = key.split('->', 1)
+                if g == 'UNKNOWN':
+                    continue
+                non_n += int(n)
+                if g == p:
+                    non_ok += int(n)
+        if non_n > 0 and (non_ok / non_n) < 0.5:
+            issues.append(
+                f'UNKNOWN GT agreement=100% but non-UNKNOWN accuracy='
+                f'{non_ok / non_n:.3f} < 0.5 (n={non_n})'
+            )
+
+    ok = not issues
+    return {
+        'ok': ok,
+        'issues': issues,
+        'report_validity': 'VALID' if ok else 'INVALID_REPORT',
+    }
+
+
+def code_hashes() -> dict[str, str]:
+    return {
+        'harness_sha256': sha256_file(Path(__file__).resolve()),
+        'station_inspect_sha256': sha256_file(STATION_INSPECT_PATH),
+        'roi_decision_sha256': sha256_file(ROI_DECISION_PATH),
+    }
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument('--candidate', type=Path, default=DEFAULT_CANDIDATE)
-    ap.add_argument('--root', type=Path, required=True, help='dataset root with batches/')
-    ap.add_argument('--out', type=Path, required=True, help='report output directory')
+    ap.add_argument('--root', type=Path, default=None, help='dataset root with batches/')
+    ap.add_argument('--out', type=Path, default=None, help='report output directory')
     ap.add_argument('--dry-run', action='store_true', help='dev data only; tag DRY_RUN_NOT_TEST')
     ap.add_argument('--conf', type=float, default=None)
+    ap.add_argument('--batch-ids-file', type=Path, default=None)
+    ap.add_argument('--limit', type=int, default=0)
     ap.add_argument(
-        '--batch-ids-file',
+        '--report-tag',
+        default=None,
+        help='override report_tag (e.g. FORMAL_TEST_v2)',
+    )
+    ap.add_argument(
+        '--sanity-check-report',
         type=Path,
         default=None,
-        help='test_batches.txt; required for formal run',
+        help='only run sanity_gate on an existing report.json (no inference)',
     )
-    ap.add_argument('--limit', type=int, default=0, help='optional frame cap (debug)')
     args = ap.parse_args(argv)
+
+    if args.sanity_check_report is not None:
+        report = load_json(args.sanity_check_report)
+        gate = sanity_gate(report)
+        print(json.dumps(gate, indent=2, ensure_ascii=False))
+        return 0 if gate['ok'] else 3
+
+    if args.root is None or args.out is None:
+        print('REFUSE: --root and --out required for evaluation runs', file=sys.stderr)
+        return 2
 
     cand = load_json(args.candidate)
     gate = gate_candidate(cand, dry_run=args.dry_run)
@@ -442,9 +464,7 @@ def main(argv: list[str] | None = None) -> int:
 
     weights = REPO / cand['weights']['path']
     rules_path = REPO / cand['roi_rules']['path']
-    rules = load_rules(rules_path)
     conf = float(args.conf if args.conf is not None else cand['inference']['conf'])
-    model_version = f"{cand['candidate_id']}:{cand['weights']['sha256'][:12]}"
 
     frames = iter_frame_metas(args.root, batch_ids)
     if args.limit and args.limit > 0:
@@ -457,8 +477,8 @@ def main(argv: list[str] | None = None) -> int:
     per_frame: list[dict[str, Any]] = []
     unit_ok = 0
     unit_n = 0
-    by_object = Counter()
-    by_object_ok = Counter()
+    by_object: Counter = Counter()
+    by_object_ok: Counter = Counter()
     confusion: dict[str, Counter] = defaultdict(Counter)
     failures: list[dict[str, Any]] = []
     station_ok = 0
@@ -467,7 +487,6 @@ def main(argv: list[str] | None = None) -> int:
     unknown_gt_ok = 0
 
     for meta_path, meta in frames:
-        # Skip synthetic on formal path
         if not args.dry_run and meta.get('synthetic') is True:
             failures.append(
                 {
@@ -477,12 +496,24 @@ def main(argv: list[str] | None = None) -> int:
             )
             continue
         try:
-            bgr = load_bgr(meta_path, meta)
-            if 'robot_pose' not in meta:
-                raise KeyError('robot_pose')
-            dets = run_yolo(weights, bgr, conf)
-            pred, decisions, miss = extract_pred_states_from_yolo_path(
-                bgr, meta, rules, dets, model_version
+            png = resolve_png(meta_path, meta)
+            pose = meta.get('robot_pose') or {}
+            if 'yaw' not in pose:
+                raise KeyError('robot_pose.yaw')
+            stamp = meta.get('image_stamp')
+            if isinstance(stamp, dict):
+                image_stamp = f"{stamp.get('sec', 0)}.{int(stamp.get('nanosec', 0)):09d}"
+            else:
+                image_stamp = str(stamp or meta.get('captured_at') or '0')
+            pred, payload = predict_via_runtime(
+                png=png,
+                station_id=str(meta['station_id']),
+                robot_yaw=float(pose['yaw']),
+                weights=weights,
+                rules_path=rules_path,
+                conf=conf,
+                image_stamp=image_stamp,
+                mission_id=f"formal_{meta.get('batch_id', 'x')}",
             )
             gt = gt_object_states(meta)
             units = agreement_units(gt, pred)
@@ -501,7 +532,7 @@ def main(argv: list[str] | None = None) -> int:
                 else:
                     frame_fail.append({'object': name, 'gt': g, 'pred': p})
             g_roll = station_rollup(gt)
-            p_roll = station_rollup(pred)
+            p_roll = str(pred.get('inspection_status') or station_rollup(pred))
             station_n += 1
             if g_roll == p_roll:
                 station_ok += 1
@@ -512,12 +543,17 @@ def main(argv: list[str] | None = None) -> int:
                 'batch_id': meta.get('batch_id'),
                 'station_id': meta.get('station_id'),
                 'distance_m': meta.get('distance_m'),
-                'gt': gt,
-                'pred': pred,
+                'gt': {k: gt[k] for k in ('leds', 'panel', 'leak')},
+                'pred': {
+                    'leds': pred['leds'],
+                    'panel': pred['panel'],
+                    'leak': pred['leak'],
+                },
+                'slot_contract': pred.get('slot_contract'),
                 'gt_rollup': g_roll,
                 'pred_rollup': p_roll,
-                'miss': miss,
-                'n_dets': len(dets),
+                'missed': payload.get('missed', []),
+                'n_dets': len(payload.get('detections') or []),
                 'failures': frame_fail,
             }
             per_frame.append(rec)
@@ -526,15 +562,29 @@ def main(argv: list[str] | None = None) -> int:
         except Exception as exc:  # noqa: BLE001
             failures.append({'image_id': meta.get('image_id'), 'error': str(exc)})
 
-    report = {
+    if args.report_tag:
+        report_tag = args.report_tag
+    elif args.dry_run:
+        report_tag = 'DRY_RUN_NOT_TEST'
+    else:
+        report_tag = 'FORMAL_TEST'
+
+    hashes = code_hashes()
+    env = env_info()
+    report: dict[str, Any] = {
         'schema': 'formal_vision_test_report_v1',
-        'report_tag': 'DRY_RUN_NOT_TEST' if args.dry_run else 'FORMAL_TEST',
+        'report_tag': report_tag,
         'created_at': datetime.now(timezone.utc).isoformat(),
         'candidate_id': cand['candidate_id'],
         'candidate_path': str(args.candidate),
         'weights_sha256': cand['weights']['sha256'],
         'roi_rules_sha256': cand['roi_rules']['sha256'],
         'code_head_at_candidate': cand.get('code_head'),
+        'code_head_at_run': env.get('git_head'),
+        'harness_sha256': hashes['harness_sha256'],
+        'station_inspect_sha256': hashes['station_inspect_sha256'],
+        'roi_decision_sha256': hashes['roi_decision_sha256'],
+        'predictor': 'inspection_mission.station_inspect.inspect_station_image',
         'root': str(args.root),
         'batch_ids': batch_ids,
         'n_frames': len(per_frame),
@@ -559,7 +609,7 @@ def main(argv: list[str] | None = None) -> int:
             },
         },
         'denominator_rules': {
-            'unit': 'per image: led_0,led_1,led_2,panel,leak',
+            'unit': 'per image: led_0,led_1,led_2,panel,leak (model-order LEDs)',
             'unknown_in_denominator': True,
             'unknown_correct_only_if_pred_unknown': True,
             'miss_counts_as_error': True,
@@ -567,14 +617,22 @@ def main(argv: list[str] | None = None) -> int:
         },
         'confusion': {k: dict(v) for k, v in confusion.items()},
         'n_failures': len(failures),
-        'environment': env_info(),
+        'environment': env,
         'gate': gate,
         'note': (
             'DRY_RUN_NOT_TEST — must not be cited as formal 5B gate'
             if args.dry_run
-            else 'Formal frozen test run; do not retune on this set'
+            else 'Formal frozen test run via Runtime inspect_station_image; do not retune'
         ),
     }
+
+    sgate = sanity_gate(report, per_frame)
+    report['sanity_gate'] = sgate
+    if not sgate['ok']:
+        report['report_validity'] = 'INVALID_REPORT'
+        report['report_tag'] = 'INVALID_REPORT'
+    else:
+        report['report_validity'] = 'VALID'
 
     (args.out / 'report.json').write_text(
         json.dumps(report, indent=2, ensure_ascii=False) + '\n', encoding='utf-8'
@@ -589,8 +647,10 @@ def main(argv: list[str] | None = None) -> int:
     md = [
         f"# Vision Test Report ({report['report_tag']})",
         '',
+        f"- validity: `{report['report_validity']}`",
         f"- created: `{report['created_at']}`",
         f"- candidate: `{report['candidate_id']}`",
+        f"- predictor: `{report['predictor']}`",
         f"- frames: **{report['n_frames']}**",
         f"- per-object agreement: **{report['metrics']['per_object_agreement']}** "
         f"({unit_ok}/{unit_n})",
@@ -599,24 +659,40 @@ def main(argv: list[str] | None = None) -> int:
         f"- UNKNOWN GT agreement: **{report['metrics']['unknown_gt_agreement']}** "
         f"({unknown_gt_ok}/{unknown_gt_n})",
         f"- failures listed: {report['n_failures']}",
+        f"- harness_sha256: `{hashes['harness_sha256']}`",
+        f"- station_inspect_sha256: `{hashes['station_inspect_sha256']}`",
+        f"- roi_decision_sha256: `{hashes['roi_decision_sha256']}`",
+        f"- code_head_at_run: `{env.get('git_head')}`",
         '',
         '## By object',
         '',
     ]
     for k, v in report['metrics']['by_object'].items():
         md.append(f"- `{k}`: {v['agreement']} ({v['correct']}/{v['total']})")
+    if sgate['issues']:
+        md.append('\n## Sanity gate issues\n')
+        for issue in sgate['issues']:
+            md.append(f'- {issue}')
     md.append('')
     md.append(f"## Note\n\n{report['note']}\n")
     (args.out / 'report.md').write_text('\n'.join(md), encoding='utf-8')
 
-    print(json.dumps({
-        'report_tag': report['report_tag'],
-        'n_frames': report['n_frames'],
-        'per_object_agreement': report['metrics']['per_object_agreement'],
-        'station_rollup_agreement': report['metrics']['station_rollup_agreement'],
-        'out': str(args.out),
-    }, indent=2))
-    return 0
+    print(
+        json.dumps(
+            {
+                'report_tag': report['report_tag'],
+                'report_validity': report['report_validity'],
+                'n_frames': report['n_frames'],
+                'per_object_agreement': report['metrics']['per_object_agreement'],
+                'station_rollup_agreement': report['metrics']['station_rollup_agreement'],
+                'sanity_ok': sgate['ok'],
+                'sanity_issues': sgate['issues'],
+                'out': str(args.out),
+            },
+            indent=2,
+        )
+    )
+    return 0 if sgate['ok'] else 3
 
 
 if __name__ == '__main__':
