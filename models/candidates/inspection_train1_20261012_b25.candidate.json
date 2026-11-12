@@ -1,0 +1,68 @@
+{
+  "schema": "vision_candidate_manifest_v1",
+  "candidate_id": "inspection_train1_20261012_b25",
+  "status": "frozen_candidate",
+  "created_at": "2026-11-12T07:09:00.951481+00:00",
+  "parent_candidate_id": "inspection_train1_20261012",
+  "code_head": "2fd4af4cd8268cd66c681b8c55f17276d98c17b4",
+  "note": "B2.5 ROI v2 + LED x-sort/row-band + panel uncertain→UNKNOWN; weights unchanged; no retrain",
+  "weights": {
+    "path": "models/weights/inspection_train1_20261012.pt",
+    "source_path": "bags/vision_5b_c2/train1/weights/best.pt",
+    "sha256": "a1d2507a6fe5fc9bae12e85f28fc3e876477b010b88640bb251d198ee023fed4",
+    "note": "Train-1 best.pt; no retrain this batch (hash unchanged from B2)"
+  },
+  "roi_rules": {
+    "path": "ros2_ws/src/vision_perception/config/roi_rules_v2.yaml",
+    "registered_copy": "models/weights/inspection_train1_20261012_b25.roi_rules.yaml",
+    "sha256": "74346f7316e89ae275997b268081e97d6e2516577312b7d6a9caa187976e0da4",
+    "schema": "roi_rules_v1",
+    "content_version": "roi_rules_v2_b25"
+  },
+  "code_artifacts": {
+    "hook1_yolo_roi_e1_sha256": "e01ffffa3e586b7dc3f4a6218176dde7c40ffcc554a3e38e8761d4904353ba20",
+    "roi_decision_sha256": "7f64dff8ca5aa0fac5aa13b8bae302d01f41079e375d58cfbf713d420adebd3a",
+    "roi_judge_d1_sha256": "e0a09817c87e26cfd7d111a9084d5454e7f0004b8affc516b8c310b2318996d6",
+    "station_inspect_sha256": "cdc95536b4a137e760f8158057a9b22a7686e0e0fb0db66463e1815bca8212d5",
+    "formal_vision_test_collect_sha256": "3ccdd9ceceffc74526870cc8fc333a19df8c8ba0add30901b1bc76dc941f9d84"
+  },
+  "harness": {
+    "path": "scripts/formal_vision_test_run.py",
+    "sha256": "de511fda80d8e0f2895e801f0529a1bfad1927c20d29f45fda31a559e3432ade"
+  },
+  "inference": {
+    "backend": "ultralytics.YOLO",
+    "conf": 0.25,
+    "imgsz": 640,
+    "classes": [
+      "indicator_light",
+      "panel",
+      "inspection_region"
+    ],
+    "led_slot_association": "iou_ref_if_3_slots_else_rowband_xsort_then_led_image_to_model",
+    "miss_policy": "missing_expected_object_counts_as_error_in_denominator",
+    "panel_uncertain_policy": "overexpose_occlusion_crop_return_UNKNOWN_never_force_lit_dark"
+  },
+  "training_artifacts": {
+    "args_yaml": "models/weights/inspection_train1_20261012.args.yaml",
+    "dev_report": "models/weights/inspection_train1_20261012.dev_report.md",
+    "dev_split": "models/weights/inspection_train1_20261012.dev_split.json",
+    "dev_train_ids": "models/weights/inspection_train1_20261012.dev_train_image_ids.txt",
+    "dev_val_ids": "models/weights/inspection_train1_20261012.dev_val_image_ids.txt"
+  },
+  "dev_data_note": "soft train/val / D1 / synth only for Phase1 sanity; NOT formal 5B test",
+  "formal_test": {
+    "frozen": true,
+    "frozen_at": "2026-11-12T07:38:48.411912+00:00",
+    "test_root": "bags/vision_5b_test_20261112",
+    "test_batches_file": "bags/vision_5b_test_20261112/splits/test_batches.txt",
+    "freeze_manifest": "bags/vision_5b_test_20261112/manifests/test_freeze_20261112.json",
+    "freeze_sha256": "5ef56c42157e39239c2c5a015ffa7350d0d88408d9b345a5a7cc751e5bb95e99",
+    "n_frames": 70,
+    "batch_ids": [
+      "test_20261112_seed501_session1",
+      "test_20261112_seed510_session2",
+      "test_20261112_seed520_session3"
+    ]
+  }
+}

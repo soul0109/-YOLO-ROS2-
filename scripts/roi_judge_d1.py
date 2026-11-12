@@ -84,12 +84,65 @@ def classify_led(patch_bgr: np.ndarray, cfg: dict[str, Any]) -> tuple[str, dict[
     return 'UNKNOWN', {**detail, 'reason': 'U_led_no_color'}
 
 
-def classify_panel(patch_bgr: np.ndarray, cfg: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+def classify_panel(
+    patch_bgr: np.ndarray,
+    cfg: dict[str, Any],
+    *,
+    crop_outside_frac: float | None = None,
+) -> tuple[str, dict[str, Any]]:
+    """Classify panel state; uncertain cases → UNKNOWN (never force lit/dark)."""
     if patch_bgr.size == 0:
         return 'UNKNOWN', {'reason': 'empty_roi'}
+    h, w = patch_bgr.shape[:2]
+    unc = cfg.get('uncertain')  # only apply v2 uncertain rules when block present
+    detail: dict[str, Any] = {'patch_hw': [int(h), int(w)]}
+    min_side = int((unc or {}).get('min_patch_side_px', 8))
+    if h < min_side or w < min_side:
+        return 'UNKNOWN', {**detail, 'reason': 'U_panel_degenerate'}
+
     hsv = cv2.cvtColor(patch_bgr, cv2.COLOR_BGR2HSV)
-    v_mean = float(hsv[:, :, 2].mean())
-    detail = {'v_mean': round(v_mean, 1)}
+    v = hsv[:, :, 2].astype(np.float32)
+    s = hsv[:, :, 1].astype(np.float32)
+    v_mean = float(v.mean())
+    v_std = float(v.std())
+    v95 = float(np.percentile(v, 95))
+    sat_mean = float(s.mean())
+    detail.update(
+        {
+            'v_mean': round(v_mean, 1),
+            'v_std': round(v_std, 1),
+            'v95': round(v95, 1),
+            'sat_mean': round(sat_mean, 1),
+        }
+    )
+
+    if unc:
+        if crop_outside_frac is not None:
+            detail['crop_outside_frac'] = round(float(crop_outside_frac), 3)
+            if float(crop_outside_frac) >= float(unc.get('crop_outside_frac_min', 0.25)):
+                return 'UNKNOWN', {**detail, 'reason': 'U_panel_cropped'}
+
+        # Overexpose / bloom → UNKNOWN (not lit).
+        # Normal lit panels are high-V + high sat; bloom is high-V + low sat.
+        if (
+            (
+                v_mean >= float(unc.get('overexpose_v_mean_min', 245))
+                or v95 >= float(unc.get('overexpose_v95_min', 252))
+            )
+            and sat_mean <= float(unc.get('overexpose_sat_mean_max', 50))
+        ):
+            return 'UNKNOWN', {**detail, 'reason': 'U_panel_overexpose'}
+
+        # Flat dark-gray occlusion plate → UNKNOWN (not dark panel)
+        if (
+            float(unc.get('occlusion_v_mean_min', 8))
+            <= v_mean
+            <= float(unc.get('occlusion_v_mean_max', 55))
+            and v_std <= float(unc.get('occlusion_v_std_max', 18))
+            and sat_mean <= float(unc.get('occlusion_sat_mean_max', 35))
+        ):
+            return 'UNKNOWN', {**detail, 'reason': 'U_panel_occluded'}
+
     if v_mean >= cfg['lit_v_min']:
         return 'lit', detail
     if v_mean <= cfg['dark_v_max']:

@@ -38,10 +38,10 @@ from apply_vision_scene_gt import (  # noqa: E402
 from capture_vision_station_frames import _grab_bgr  # noqa: E402
 from c2_collect_expand import pose_at_distance  # noqa: E402
 
-LABEL_VERSION = 'formal_test_b2_v0.1'
+LABEL_VERSION = 'formal_test_b25_v0.1'
 SCHEMA = 'vision_5b_frame_v1'
 DEFAULT_RULES = (
-    REPO / 'ros2_ws' / 'src' / 'vision_perception' / 'config' / 'roi_rules.yaml'
+    REPO / 'ros2_ws' / 'src' / 'vision_perception' / 'config' / 'roi_rules_v2.yaml'
 )
 
 # Mid-band / ambiguous materials (raw scene — not image aug).
@@ -419,24 +419,24 @@ def capture_one(
 
 
 def plan_sessions(date_tag: str) -> list[dict[str, Any]]:
-    """3 independent sessions / batch_ids; seeds ≥400 (avoid C2 ≤204)."""
-    s1_seeds = list(range(401, 409))  # 8 seeds × ABC = 24
-    s3_seeds = list(range(420, 424))  # 4 × ABC = 12
+    """3 independent sessions / batch_ids; seeds ≥500 (B2.5; avoid B2 401–474)."""
+    s1_seeds = list(range(501, 509))  # 8 seeds × ABC = 24
+    s3_seeds = list(range(520, 524))  # 4 × ABC = 12
     return [
         {
             'session': 1,
-            'batch_id': f'test_{date_tag}_seed401_session1',
+            'batch_id': f'test_{date_tag}_seed501_session1',
             'role': 'normal_rare',
             'seeds': s1_seeds,
         },
         {
             'session': 2,
-            'batch_id': f'test_{date_tag}_seed410_session2',
+            'batch_id': f'test_{date_tag}_seed510_session2',
             'role': 'unknown_hard',
         },
         {
             'session': 3,
-            'batch_id': f'test_{date_tag}_seed420_session3',
+            'batch_id': f'test_{date_tag}_seed520_session3',
             'role': 'fill_distance',
             'seeds': s3_seeds,
         },
@@ -501,22 +501,24 @@ def run_session_unknown_hard(
     batch_dir.mkdir(parents=True, exist_ok=True)
     metas: list[dict[str, Any]] = []
     recipes: list[dict[str, Any]] = []
-    # 12 UNKNOWN-focused (raw scene materials; not image aug)
+    # 12 UNKNOWN-focused (raw scene materials; not image aug). Seeds ≥510.
+    # Same U/H recipes as B2; only seed IDs remapped (no new occlusion/materials).
     for sid in ('A', 'B', 'C'):
-        recipes.append({'kind': 'U_panel', 'station': sid, 'seed': 410 + ord(sid)})
-        recipes.append({'kind': 'U_led', 'station': sid, 'seed': 413 + ord(sid)})
-    recipes.append({'kind': 'U_panel', 'station': 'A', 'seed': 430})
-    recipes.append({'kind': 'U_led', 'station': 'B', 'seed': 431})
-    recipes.append({'kind': 'U_panel', 'station': 'C', 'seed': 432})
-    recipes.append({'kind': 'U_led', 'station': 'A', 'seed': 433})
-    recipes.append({'kind': 'U_panel', 'station': 'B', 'seed': 434})
-    recipes.append({'kind': 'U_led', 'station': 'C', 'seed': 435})
-    # 12 hard-focused (may also carry UNKNOWN labels)
+        recipes.append({'kind': 'U_panel', 'station': sid, 'seed': 510 + ord(sid)})
+        recipes.append({'kind': 'U_led', 'station': sid, 'seed': 513 + ord(sid)})
+    recipes.append({'kind': 'U_panel', 'station': 'A', 'seed': 530})
+    recipes.append({'kind': 'U_led', 'station': 'B', 'seed': 531})
+    recipes.append({'kind': 'U_panel', 'station': 'C', 'seed': 532})
+    recipes.append({'kind': 'U_led', 'station': 'A', 'seed': 533})
+    recipes.append({'kind': 'U_panel', 'station': 'B', 'seed': 534})
+    recipes.append({'kind': 'U_led', 'station': 'C', 'seed': 535})
+    # 12 hard-focused (may also carry UNKNOWN labels) — H_OVR/H_OCC in UNKNOWN
+    # quota; 3×H_CROP are the hard-only slice (36+21+3 main).
     for sid in ('A', 'B', 'C'):
-        recipes.append({'kind': 'H_OVR', 'station': sid, 'seed': 440 + ord(sid)})
-        recipes.append({'kind': 'H_OCC', 'station': sid, 'seed': 443 + ord(sid)})
-        recipes.append({'kind': 'H_CROP', 'station': sid, 'seed': 446 + ord(sid)})
-        recipes.append({'kind': 'H_OVR', 'station': sid, 'seed': 450 + ord(sid)})
+        recipes.append({'kind': 'H_OVR', 'station': sid, 'seed': 540 + ord(sid)})
+        recipes.append({'kind': 'H_OCC', 'station': sid, 'seed': 543 + ord(sid)})
+        recipes.append({'kind': 'H_CROP', 'station': sid, 'seed': 546 + ord(sid)})
+        recipes.append({'kind': 'H_OVR', 'station': sid, 'seed': 550 + ord(sid)})
 
     if len(recipes) != 24:
         raise RuntimeError(f'unknown_hard recipes want 24 got {len(recipes)}')
@@ -656,16 +658,16 @@ def run_session_fill_distance(
             )
     # 5 @ 1.0 and 5 @ 1.5 — cover A/B/C
     dist_plan = [
-        (1.0, 'A', 460),
-        (1.0, 'B', 461),
-        (1.0, 'C', 462),
-        (1.0, 'A', 463),
-        (1.0, 'B', 464),
-        (1.5, 'A', 470),
-        (1.5, 'B', 471),
-        (1.5, 'C', 472),
-        (1.5, 'A', 473),
-        (1.5, 'C', 474),
+        (1.0, 'A', 560),
+        (1.0, 'B', 561),
+        (1.0, 'C', 562),
+        (1.0, 'A', 563),
+        (1.0, 'B', 564),
+        (1.5, 'A', 570),
+        (1.5, 'B', 571),
+        (1.5, 'C', 572),
+        (1.5, 'A', 573),
+        (1.5, 'C', 574),
     ]
     for dist, sid, seed in dist_plan:
         gt = generate_gt(seed)

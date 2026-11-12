@@ -117,34 +117,80 @@ def _iou(a: list[int], b: list[int]) -> float:
 def associate_led_slots(
     lights: list[dict[str, Any]], rules: dict[str, Any]
 ) -> list[dict[str, Any] | None]:
-    """Map up to 3 indicator_light boxes to image-left→right LED slots."""
-    slots_x = rules['rois']['led_slots_x']
-    y0, y1 = rules['rois']['led_row_y']
-    slot_boxes = [[int(x0), int(y0), int(x1), int(y1)] for x0, x1 in slots_x]
+    """Map up to 3 indicator_light boxes to image-left→right LED slots.
+
+    Prefer calibrated 1.2m reference-slot IoU when it fills all 3 slots
+    (no 1.2m regression). Otherwise use detector row-band + x-sort so
+    1.0/1.5m frames are not hard-gated by fixed led_slots_x/led_row_y.
+    """
     assigned: list[dict[str, Any] | None] = [None, None, None]
     if not lights:
         return assigned
-    # Greedy: sort lights by x-center, then best IoU / center distance to slots.
-    remaining = sorted(
-        lights, key=lambda d: (d['bbox_xyxy'][0] + d['bbox_xyxy'][2]) / 2.0
-    )
-    used_slots: set[int] = set()
-    for det in remaining:
-        best_i, best_score = None, -1.0
-        cx = (det['bbox_xyxy'][0] + det['bbox_xyxy'][2]) / 2.0
-        for i, sb in enumerate(slot_boxes):
-            if i in used_slots:
+
+    def _cxcy(d: dict[str, Any]) -> tuple[float, float]:
+        x0, y0, x1, y1 = d['bbox_xyxy']
+        return (float(x0 + x1) / 2.0, float(y0 + y1) / 2.0)
+
+    assoc = rules.get('led_association') or {}
+    band_half = float(assoc.get('row_band_half_px', 40))
+    min_xsort = int(assoc.get('min_xsort_dets', 3))
+    ref_iou_min = float(assoc.get('ref_slot_iou_min', 0.02))
+
+    rois = rules.get('rois') or {}
+    slots_x = rois.get('led_slots_x')
+    led_row = rois.get('led_row_y')
+
+    def _iou_assign() -> list[dict[str, Any] | None]:
+        out: list[dict[str, Any] | None] = [None, None, None]
+        if not slots_x or not led_row:
+            return out
+        y0, y1 = led_row
+        slot_boxes = [[int(x0), int(y0), int(x1), int(y1)] for x0, x1 in slots_x]
+        remaining = sorted(lights, key=lambda d: _cxcy(d)[0])
+        used_slots: set[int] = set()
+        for det in remaining:
+            best_i, best_score = None, -1e9
+            cx = _cxcy(det)[0]
+            for i, sb in enumerate(slot_boxes):
+                if i in used_slots:
+                    continue
+                iou = _iou(det['bbox_xyxy'], sb)
+                scx = (sb[0] + sb[2]) / 2.0
+                dist = abs(cx - scx)
+                score = iou * 10.0 - dist / 100.0
+                if score > best_score:
+                    best_score, best_i = score, i
+            if best_i is None:
                 continue
+            # Require weak geometric support so far-away 1.0m boxes don't force-map.
+            sb = slot_boxes[best_i]
             iou = _iou(det['bbox_xyxy'], sb)
             scx = (sb[0] + sb[2]) / 2.0
-            dist = abs(cx - scx)
-            score = iou * 10.0 - dist / 100.0
-            if score > best_score:
-                best_score, best_i = score, i
-        if best_i is None:
-            continue
-        used_slots.add(best_i)
-        assigned[best_i] = det
+            if iou < ref_iou_min and abs(cx - scx) > 80:
+                continue
+            used_slots.add(best_i)
+            out[best_i] = det
+        return out
+
+    iou_assigned = _iou_assign()
+    if all(s is not None for s in iou_assigned):
+        return iou_assigned
+
+    # Distance-robust path: row band around median cy + x-sort → slots 0..2.
+    cys = [_cxcy(d)[1] for d in lights]
+    median_cy = float(sorted(cys)[len(cys) // 2])
+    in_band = [d for d in lights if abs(_cxcy(d)[1] - median_cy) <= band_half]
+    if len(in_band) < min_xsort:
+        in_band = [d for d in lights if abs(_cxcy(d)[1] - median_cy) <= band_half * 1.75]
+    pool = in_band if in_band else list(lights)
+    ordered = sorted(pool, key=lambda d: _cxcy(d)[0])
+    if len(ordered) > 3:
+        ordered = sorted(ordered, key=lambda d: -float(d.get('confidence') or 0.0))[:3]
+        ordered = sorted(ordered, key=lambda d: _cxcy(d)[0])
+    for i, det in enumerate(ordered[:3]):
+        assigned[i] = det
+    # If IoU filled some slots and x-sort filled others inconsistently, prefer
+    # x-sort wholesale for non-1.2m (already in this branch).
     return assigned
 
 

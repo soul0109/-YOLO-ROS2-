@@ -143,7 +143,20 @@ def decide_one(bgr: np.ndarray, req: RoiRequest, rules: dict[str, Any]) -> Decis
         )
 
     if req.object_type == 'panel':
-        state, detail = classify_panel(patch, rules['panel'])
+        # Fraction of the requested bbox that lies outside the image (crop).
+        crop_outside_frac = None
+        if req.bbox_xyxy is not None:
+            x0, y0, x1, y1 = [int(v) for v in req.bbox_xyxy]
+            bw = max(1, x1 - x0)
+            bh = max(1, y1 - y0)
+            ih, iw = bgr.shape[:2]
+            inside_w = max(0, min(x1, iw) - max(x0, 0))
+            inside_h = max(0, min(y1, ih) - max(y0, 0))
+            inside = inside_w * inside_h
+            crop_outside_frac = 1.0 - (inside / float(bw * bh))
+        state, detail = classify_panel(
+            patch, rules['panel'], crop_outside_frac=crop_outside_frac
+        )
         verd = _panel_verdict(state, insp)
         if verd == 'PASS':
             reason = 'panel_lit'

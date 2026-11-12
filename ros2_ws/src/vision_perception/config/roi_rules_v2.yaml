@@ -1,0 +1,88 @@
+# ROI rules v2 (B2.5) — content fork of v1.
+# schema stays roi_rules_v1 (protocol); content tracked by file hash / candidate.
+# Changes vs v1:
+# - panel.uncertain: overexpose / flat occlusion / edge crop → UNKNOWN
+# - led association prefers detector x-sort + row band (code); fixed slots remain
+#   soft reference for 1.2m geometry, not a hard IoU gate.
+
+schema: roi_rules_v1
+image_size: [640, 480]
+content_version: roi_rules_v2_b25
+
+rois:
+  led_row_y: [2, 45]
+  led_slots_x:
+    - [182, 229]
+    - [297, 342]
+    - [410, 457]
+  panel: [240, 90, 400, 160]
+  leak_floor: [240, 300, 400, 400]
+
+# Soft reference for LED row band when detector row is ambiguous.
+led_association:
+  row_band_half_px: 40
+  min_xsort_dets: 3
+  # If IoU-to-ref fills all 3 slots, keep 1.2m D1/Runtime behavior.
+  ref_slot_iou_min: 0.02
+
+led_image_to_model:
+  face_neg_y: [2, 1, 0]
+  face_pos_y: [0, 1, 2]
+
+led:
+  bright_vmax_min: 160
+  min_bright_pixels: 80
+  red: {r_min: 150, r_over_g: 40, r_over_b: 40}
+  green: {g_min: 150, g_over_r: 40, g_over_b: 40}
+  yellow: {r_min: 150, g_min: 150, b_max: 80, rg_abs_max: 40}
+  "off": {v90_max: 90, mean_vmax_max: 70}
+  rel_to_row_max: 0.40
+
+panel:
+  lit_v_min: 120
+  dark_v_max: 40
+  # Uncertain → UNKNOWN (do not hard-report lit/dark)
+  uncertain:
+    # Bloom / overexpose (H_OVR-like); keep below true white so normal lit stays lit
+    overexpose_v_mean_min: 245
+    overexpose_v95_min: 252
+    overexpose_sat_mean_max: 50
+    # Flat occlusion cover (H_OCC-like dark-gray plate)
+    occlusion_v_mean_max: 55
+    occlusion_v_mean_min: 8
+    occlusion_v_std_max: 18
+    occlusion_sat_mean_max: 35
+    # Partial out-of-frame / clipped ROI
+    crop_outside_frac_min: 0.25
+    min_patch_side_px: 12
+
+leak:
+  hsv_low: [80, 40, 80]
+  hsv_high: [110, 255, 255]
+  fail_frac_min: 0.05
+  none_frac_max: 0.01
+
+inspection:
+  led_pass_color: green
+  panel_pass_state: lit
+  leak_pass_state: none
+
+unknown_cases:
+  - id: U_panel_ambiguous
+    how: "panel mean V between dark_v_max and lit_v_min"
+    expect: panel=UNKNOWN
+  - id: U_panel_overexpose
+    how: "panel V very high / saturated bloom"
+    expect: panel=UNKNOWN
+  - id: U_panel_occluded
+    how: "flat dark-gray cover over panel ROI"
+    expect: panel=UNKNOWN
+  - id: U_panel_cropped
+    how: "panel box heavily clipped by image border"
+    expect: panel=UNKNOWN
+  - id: U_leak_ambiguous
+    how: "leak cyan frac between none_frac_max and fail_frac_min"
+    expect: leak=UNKNOWN
+  - id: U_led_no_color
+    how: "LED slot bright but BGR matches no red/green/yellow/off rule"
+    expect: led=UNKNOWN
